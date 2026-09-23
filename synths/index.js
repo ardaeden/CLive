@@ -11,8 +11,9 @@ import { fmkeys } from "./105-fmkeys.js";
 import { fmpad } from "./106-fmpad.js";
 import { fmbass } from "./107-fmbass.js";
 import { gendy } from "./108-gendy.js";
+import { reso } from "./109-reso.js";
 
-export const SYNTHS = { pluck, bass, saw, pad, fmkeys, fmpad, fmbass, gendy };
+export const SYNTHS = { pluck, bass, saw, pad, fmkeys, fmpad, fmbass, gendy, reso };
 
 const byInstr = new Map();
 for (const [name, s] of Object.entries(SYNTHS)) {
