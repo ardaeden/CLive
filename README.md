@@ -43,3 +43,8 @@ from, so the docs can never go stale.
 - `docs/` -- the help pages; each is a thin HTML shell rendered by `docs/help.js`
   from `registry.js`.
 - `highlight.js` -- shared syntax highlighter for the editor and the help pages.
+
+## Credits
+
+- **Main Designer:** [ardaeden](https://github.com/ardaeden)
+- **Coder:** [Claude](https://claude.com/claude-code)
