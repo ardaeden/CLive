@@ -2,14 +2,14 @@
 // every built-in synth's `body` follows.
 export const bass = {
   instr: 102,
-  doc: "Sawtooth bass through a ladder low-pass filter that follows the pitch. Works best in low octaves (oct=3). Can be used as a drone.",
+  doc: "Sawtooth bass through a Moog-style low-pass filter that follows the pitch. Works best in low octaves (oct=3). Can be used as a drone.",
   drone: true,
   udo: `
 opcode Bass_dsp, aa, kkk
   kamp, kfreq, kpan xin
   kenv madsr 0.005, 0.15, 0.6, 0.12
   asig vco2 kamp * kenv, kfreq
-  asig moogladder asig, min(kfreq * 5, 6000), 0.25
+  asig moogvcf2 asig, min(kfreq * 5, 6000), 0.25
   aL, aR pan2 asig, kpan
   xout aL, aR
 endop
