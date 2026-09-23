@@ -18,7 +18,7 @@ Requires Python 3 (for the static file server) and a modern browser (Chrome/Edge
 python server.py
 ```
 
-or, on Windows, just double-click `start.bat`. Then open <http://127.0.0.1:8000>.
+or, on Windows, just double-click `start.bat` (on Linux, run `./start.sh`). Then open <http://127.0.0.1:8000>.
 
 The server sets the `Cross-Origin-Opener-Policy`/`Cross-Origin-Embedder-Policy`
 headers Csound's WASM build needs for `SharedArrayBuffer`; opening `index.html`
