@@ -9,3 +9,6 @@ _test*.html
 .DS_Store
 Thumbs.db
 *.swp
+
+# Personal notes, kept locally only.
+TODO.txt
