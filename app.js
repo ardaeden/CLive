@@ -41,6 +41,8 @@ p1: pluck@bus1(0, dur=1, send=rev1(0.2))
 `;
 
 const STORE_KEY = "clive.tabs";
+// Tab persistence is switched off for now: every launch starts from the default tab.
+const PERSIST = false;
 const highlightEl = $("highlight");
 const flashEl = $("flash");
 const tabsEl = $("tabs");
@@ -49,6 +51,7 @@ const renderHighlight = () => (highlightEl.innerHTML = highlight(editor.value));
 const isTab = (t) => t && typeof t.name === "string" && typeof t.code === "string";
 
 function loadState() {
+  if (!PERSIST) return { tabs: [{ name: "main", code: SAMPLE }], active: 0, sampleVersion: SAMPLE_VERSION, shippedSample: SAMPLE };
   try {
     const raw = JSON.parse(localStorage.getItem(STORE_KEY));
     if (raw && Array.isArray(raw.tabs)) raw.tabs = raw.tabs.filter(isTab);
@@ -82,6 +85,7 @@ function loadState() {
 
 const state = loadState();
 const saveState = () => {
+  if (!PERSIST) return;
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
   } catch {
