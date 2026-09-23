@@ -606,7 +606,7 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
 
   function buildSends(v) {
     const list = v === undefined ? [] : Array.isArray(v) ? v : [v];
-    if (list.length > MAX_SENDS) throw new Error(`At most ${MAX_SENDS} sends per player`);
+    if (list.length > MAX_SENDS) throw new Error(`At most ${MAX_SENDS} sends at once`);
     return list.map((x) => {
       if (!(x instanceof SendRef)) throw new Error("send= expects reverb names, e.g. send=rev1(0.2) or send=[rev1(0.2), rev2]");
       return { slot: x.slot, amount: asList(x.amount, DEFAULT_SEND) };
@@ -720,36 +720,42 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
     say(`${name}: ${call.name} drone ${existing ? "updated" : "starts"}`);
   }
 
-  // A bus is a mixing group: amp/pan control everything routed to it together, and can
-  // be re-evaluated live or driven with cosr()/lineto(), refreshed every tick exactly
-  // like a drone's own parameters (see forEachLineto/paramMemory above).
+  // A bus is a mixing group: amp/pan control everything routed to it together, and
+  // send= feeds the combined signal to reverbs; all of them can be re-evaluated live or
+  // driven with cosr()/lineto(), refreshed every tick exactly like a drone's own
+  // parameters (see forEachLineto/paramMemory above).
   function buildBusSpec(name, call) {
     if (call.args.length) throw new Error("bus() takes named parameters only, e.g. bus(amp=1, pan=0)");
     for (const key of Object.keys(call.kwargs)) {
-      if (!(key in BUS_DEFAULTS)) throw new Error(`Unknown bus parameter '${key}'. Available: ${Object.keys(BUS_DEFAULTS).join(", ")}`);
+      if (!(key in BUS_DEFAULTS) && key !== "send") throw new Error(`Unknown bus parameter '${key}'. Available: ${[...Object.keys(BUS_DEFAULTS), "send"].join(", ")}`);
     }
-    const spec = { name, amp: call.kwargs.amp ?? BUS_DEFAULTS.amp, pan: call.kwargs.pan ?? BUS_DEFAULTS.pan };
-    bindLinetoAll(paramMemory, name, [[spec.amp, "amp"], [spec.pan, "pan"]]);
+    const spec = { name, amp: call.kwargs.amp ?? BUS_DEFAULTS.amp, pan: call.kwargs.pan ?? BUS_DEFAULTS.pan, sends: buildSends(call.kwargs.send) };
+    bindLinetoAll(paramMemory, name, [[spec.amp, "amp"], [spec.pan, "pan"], ...spec.sends.map((x) => [x.amount, `send${x.slot}`])]);
     resolveBusChannels(spec, { beat: 0, bpm: 120 }); // dry run: surface errors immediately
     return spec;
   }
 
   function armBusLineto(spec, now) {
-    armLinetoAll(now, [spec.amp, spec.pan]);
+    armLinetoAll(now, [spec.amp, spec.pan, ...spec.sends.map((x) => x.amount)]);
   }
 
-  // Works out a bus's current amp/pan at the given beat/bpm, and remembers the raw
-  // values in paramMemory once it is actually running (see resolveDroneChannels).
+  // Works out a bus's current amp/pan/sends at the given beat/bpm, and remembers the
+  // raw values in paramMemory once it is actually running (see resolveDroneChannels).
   function resolveBusChannels(spec, now) {
     const remember = spec.slot !== undefined;
     const amp = num(spec.amp, "amp", now.beat);
     const rawPan = num(spec.pan, "pan", now.beat);
     const pan = Math.min(1, Math.max(-1, rawPan));
+    const sends = spec.sends.map((x) => {
+      const rawAmt = num(pick(x.amount, 0), "send amount", now.beat);
+      if (remember) paramMemory.set(`${spec.name}:send${x.slot}`, rawAmt);
+      return [x.slot, Math.min(1, Math.max(0, rawAmt))];
+    });
     if (remember) {
       paramMemory.set(`${spec.name}:amp`, amp);
       paramMemory.set(`${spec.name}:pan`, pan);
     }
-    return { amp, pan };
+    return { amp, pan, sends };
   }
 
   function defineBus(name, call) {

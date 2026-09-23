@@ -24,9 +24,10 @@ const REVERB_CHANNELS = Array.from({ length: REVERB_SLOTS }, (_, slot) =>
 ).join("\n");
 const reverbInstance = (slot) => (9980 + (slot + 1) / 100).toFixed(2);
 
-// A bus's own amp/pan channels, one set per slot.
+// A bus's own amp/pan channels plus its three reverb send pairs, one set per slot.
+const BUS_SEND_NAMES = ["s1slot", "s1amt", "s2slot", "s2amt", "s3slot", "s3amt"];
 const BUS_CHANNELS = Array.from({ length: BUS_SLOTS }, (_, slot) =>
-  BUS_PARAM_NAMES.map((p) => `chn_k "bus${slot}_${p}", 1`).join("\n"),
+  [...BUS_PARAM_NAMES, ...BUS_SEND_NAMES].map((p) => `chn_k "bus${slot}_${p}", 1`).join("\n"),
 ).join("\n");
 const busReturnInstance = (slot) => (9975 + (slot + 1) / 100).toFixed(2);
 // Instrument number for a built-in synth or drum's bus-routed variant, derived from
@@ -123,7 +124,7 @@ nchnls = 2
 zakinit ${(REVERB_SLOTS + BUS_SLOTS) * 2}, 1
 ${REVERB_CHANNELS}
 
-; Bus parameter channels (amp/pan), written from JS and read live by each bus return.
+; Bus parameter channels (amp/pan and send pairs), written from JS and read live by each bus return.
 ${BUS_CHANNELS}
 
 ; Drone parameter channels, written from JS and read continuously by drone instruments.
@@ -205,10 +206,22 @@ opcode revsend, 0, aaikikik
   revsend1 aInL, aInR, iS3, kA3
 endop
 
+; Like revsend1, but the reverb slot is k-rate too, so a running bus return can be
+; pointed at a different reverb without restarting it.
+opcode revsendk1, 0, aakk
+  aInL, aInR, kSlot, kAmt xin
+  if kSlot >= 0 && kAmt > 0 then
+    zawm aInL * kAmt, 2 * kSlot, 1
+    zawm aInR * kAmt, 2 * kSlot + 1, 1
+  endif
+endop
+
 ; Bus return: p4 = slot. Sums whatever was routed here -- already-panned stereo
 ; signals, so this only trims their overall level and left/right balance, it does not
 ; re-pan a mono source. Must run after every source that writes into it (a high
-; instrument number, like the reverb return) and before the send-bus clear.
+; instrument number, like the reverb return) and before the send-bus clear. Its own
+; send= goes to the reverbs after amp/pan (post-fader); it still runs before the
+; reverb returns (9980+), so they hear it in the same cycle.
 instr 9975
   islot = p4
   Samp sprintf "bus%d_amp", islot
@@ -219,7 +232,18 @@ instr 9975
   aInR zar 2 * (${REVERB_SLOTS} + islot) + 1
   kpanL = (kpan <= 0 ? 1 : 1 - kpan)
   kpanR = (kpan >= 0 ? 1 : 1 + kpan)
-  outs aInL * kamp * kpanL, aInR * kamp * kpanR
+  aOutL = aInL * kamp * kpanL
+  aOutR = aInR * kamp * kpanR
+  outs aOutL, aOutR
+  Ss1 sprintf "bus%d_s1slot", islot
+  Sa1 sprintf "bus%d_s1amt", islot
+  Ss2 sprintf "bus%d_s2slot", islot
+  Sa2 sprintf "bus%d_s2amt", islot
+  Ss3 sprintf "bus%d_s3slot", islot
+  Sa3 sprintf "bus%d_s3amt", islot
+  revsendk1 aOutL, aOutR, chnget:k(Ss1), chnget:k(Sa1)
+  revsendk1 aOutL, aOutR, chnget:k(Ss2), chnget:k(Sa2)
+  revsendk1 aOutL, aOutR, chnget:k(Ss3), chnget:k(Sa3)
 endin
 
 ; Reverb return: p4 = slot. Parameters come from the rev<slot>_* channels.
@@ -531,12 +555,19 @@ export function createEngine(Csound, { onMessage }) {
       await csound.inputMessage(`i -${droneInstance(instr)} 0 0`);
     },
 
-    // Writes a bus's amp/pan channels without touching whether its return instrument
+    // Writes a bus's amp/pan/send channels without touching whether its return instrument
     // is running -- used every tick for cosr()/lineto()-driven values, same as a drone.
-    async updateBus(slot, { amp, pan } = {}) {
+    async updateBus(slot, { amp, pan, sends } = {}) {
+      const set = (name, value) => csound.setControlChannel(`bus${slot}_${name}`, value);
       const writes = [];
-      if (amp !== undefined) writes.push(csound.setControlChannel(`bus${slot}_amp`, amp));
-      if (pan !== undefined) writes.push(csound.setControlChannel(`bus${slot}_pan`, pan));
+      if (amp !== undefined) writes.push(set("amp", amp));
+      if (pan !== undefined) writes.push(set("pan", pan));
+      if (sends) {
+        for (let i = 0; i < 3; i++) {
+          const [s, a] = sends[i] ?? [-1, 0];
+          writes.push(set(`s${i + 1}slot`, s), set(`s${i + 1}amt`, a));
+        }
+      }
       await Promise.all(writes);
     },
 

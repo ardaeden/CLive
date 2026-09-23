@@ -208,7 +208,7 @@ export const COMMANDS = [
   },
   { syntax: "name: log(cosr(5, 3, 4), dur=1/2)", doc: "Prints a value to the console on every step instead of playing a sound, so you can watch cosr(), random(), round() and patterns. The value is worked out at the step's own beat, exactly as a parameter would get it. It takes one value and dur, and is stopped like any player." },
   { syntax: "name: reverb(decay=0.9, ...)", doc: "Create or update a reverb return. Changes apply immediately and keep the reverb running." },
-  { syntax: "name: bus(amp=1, pan=0)", doc: "Create or update a bus: a mixing group. amp and pan update immediately, live, the same as a drone's (plain numbers, cosr() or lineto()). See the Buses page." },
+  { syntax: "name: bus(amp=1, pan=0, send=rev1(0.3))", doc: "Create or update a bus: a mixing group. amp, pan and send update immediately, live, the same as a drone's (plain numbers, cosr() or lineto()). send= feeds the whole group to up to three reverbs. See the Buses page." },
   { syntax: "name: synth@busname(degrees, dur=1, ...)", doc: "A player whose whole output goes to a bus instead of straight to the speakers, so the bus's amp/pan control it (and everything else routed there) together. The bus must already exist. send= still works independently." },
   { syntax: "kill name", doc: "Stop a player at the next bar line (or beat, with updates \"beat\"), or remove a reverb, drone or bus immediately." },
   { syntax: "kill d*", doc: "Kill every player, reverb, drone and bus whose name matches. * matches any characters, so kill d* stops d1, d2, d10 ..." },
@@ -382,10 +382,11 @@ export const GUIDE = {
     paragraphs: [
       "A bus is a mixing group, not a send: define one with `mix1: bus(amp=1, pan=0)`, then a player's whole output (not a copy of it) goes to a bus by writing the bus name after an @ right after the synth, e.g. `p1: pluck@mix1([0, 2, 4], dur=1/2)`. p1 no longer plays on its own; the bus's amp/pan control it and everything else routed there, together, as one group. Every built-in synth and every drum voice (play()) can be routed this way; a named or numbered instrument from your own Csound code cannot.",
       "amp and pan update live while the bus runs, the same as a drone's do: re-evaluate the line with new plain numbers, or use `cosr()`/`lineto()` there and they keep refreshing on their own, about every 20ms.",
-      "`send=` on a bussed player still works exactly as before and is independent of the bus: the note computes its own reverb send from its own dry signal before that signal is handed to the bus.",
+      "A bus can feed reverbs too: `mix1: bus(send=rev1(0.4))`, or up to three with `send=[rev1(0.4), rev2(0.1)]`, sends the group's combined signal after its amp and pan (post-fader), so turning the bus down turns its reverb down with it. The amount updates live like amp and pan, and pointing the bus at a different reverb takes effect straight away, without restarting it.",
+      "`send=` on a bussed player still works exactly as before and is independent of the bus: the note computes its own reverb send from its own dry signal before that signal is handed to the bus. The two add up, so a player with its own `send=rev1(0.3)` on a bus with `send=rev1(0.4)` reaches rev1 twice; usually you want one or the other.",
       "`kill mix1` stops the bus immediately. Players still routed to it do not error, they just go silent (the same as sending to a killed reverb) -- re-evaluate them, without @mix1 or with a different bus, to hear them again.",
     ],
-    example: 'mix1: bus(amp=0.8, pan=0)\np1: pluck@mix1([0, 2, 4, 7], dur=1/2)\np2: pluck@mix1([2, 4, 6, 9], dur=1/2, oct=6, amp=0.6)\n; fade the whole group out together, then back in\nmix1: bus(amp=lineto(0, 3))\nmix1: bus(amp=lineto(0, 0.8, 2))',
+    example: 'rev1: reverb(decay=0.9)\nmix1: bus(amp=0.8, pan=0, send=rev1(0.3))\np1: pluck@mix1([0, 2, 4, 7], dur=1/2)\np2: pluck@mix1([2, 4, 6, 9], dur=1/2, oct=6, amp=0.6)\n; wash the whole group in reverb, then dry it again (a redefinition resets\n; whatever it leaves out, so keep amp and send on every line)\nmix1: bus(amp=0.8, send=rev1(lineto(0.8, 4)))\nmix1: bus(amp=0.8, send=rev1(lineto(0.3, 2)))\n; fade the whole group out together, then back in\nmix1: bus(amp=lineto(0, 3), send=rev1(0.3))\nmix1: bus(amp=lineto(0, 0.8, 2), send=rev1(0.3))',
   },
   csound: {
     title: "Your own Csound instruments",
