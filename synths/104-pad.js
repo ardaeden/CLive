@@ -11,7 +11,9 @@ opcode Pad_dsp, aa, kkk
   a1 vco2 kamp * kenv, kfreq * 0.995
   a2 vco2 kamp * kenv, kfreq * 1.005
   a3 vco2 kamp * kenv * 0.5, kfreq * 0.5
-  asig moogladder (a1 + a2 + a3) * 0.4, 1500, 0.1
+  ; moogvcf2 rather than moogladder: same Moog-style low-pass at a fraction of the CPU,
+  ; so stacked chords with overlapping releases do not overload the audio thread.
+  asig moogvcf2 (a1 + a2 + a3) * 0.4, 1500, 0.1
   aL, aR pan2 asig, kpan
   xout aL, aR
 endop
