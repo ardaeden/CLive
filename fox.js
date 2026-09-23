@@ -546,12 +546,15 @@ function inRange(v, min, max, what) {
   return n;
 }
 
+// A fractional degree lands proportionally between its two neighbouring scale steps,
+// so a lineto() or cosr() on the degree glides smoothly instead of creeping one
+// semitone and then jumping whenever the next step is further away than that.
 function degreeToMidi(d, scale, root, oct) {
   const n = scale.length;
+  const stepMidi = (i) => scale[((i % n) + n) % n] + Math.floor(i / n) * 12;
   const idx = Math.floor(d);
-  const frac = d - idx;
-  const step = ((idx % n) + n) % n;
-  return 12 * oct + root + scale[step] + Math.floor(idx / n) * 12 + frac;
+  const lo = stepMidi(idx);
+  return 12 * oct + root + lo + (d - idx) * (stepMidi(idx + 1) - lo);
 }
 
 // oct is clamped, but a large degree (a custom scale wraps octaves with no bound of its

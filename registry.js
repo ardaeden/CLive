@@ -154,7 +154,7 @@ export const PLAYER_PARAMS = {
   degree: {
     default: 0,
     shown: "[0]",
-    doc: "What to play, usually the first positional argument. Scale degrees (negative and fractional allowed), a tuple (0, 2, 4) for a chord, r for a rest. For play() it is the drum string.",
+    doc: "What to play, usually the first positional argument. Scale degrees (negative and fractional allowed; a fractional degree lands proportionally between its two neighbouring scale steps, so lineto() or cosr() on it glides smoothly), a tuple (0, 2, 4) for a chord, r for a rest. For play() it is the drum string.",
   },
   dur: { default: 1, shown: "required", doc: "Length of every step in beats. A list cycles step by step. Leaving it out entirely (not even dur=1) is what makes a definition a drone instead of a player; see the Drones page." },
   amp: { default: 1, shown: "1", doc: "Loudness multiplier. A list cycles step by step." },
