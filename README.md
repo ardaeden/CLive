@@ -46,5 +46,5 @@ from, so the docs can never go stale.
 
 ## Credits
 
-- **Main Designer:** [ardaeden](https://github.com/ardaeden)
+- **Head Designer:** [Arda Eden](https://github.com/ardaeden)
 - **Coder:** [Claude](https://claude.com/claude-code)
