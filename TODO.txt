@@ -1,0 +1,1 @@
+1- Enstrümanlar akor çaldığında clipping oluyor. Ona bir yol bulmak lazım.

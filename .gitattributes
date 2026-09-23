@@ -1,0 +1,13 @@
+# Force LF line endings for all text files, regardless of a cloning machine's own
+# core.autocrlf setting. A CRLF/LF mismatch here has actually broken the app before
+# (see engine.js's evaluate(): a trailing \r survives split("\n") and silently broke
+# the comment-detection regex there) -- fox.js/engine.js defend against it at runtime
+# too now, but there is no reason to let CRLF back into the repo at all.
+* text=auto eol=lf
+*.js text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.bat text eol=crlf

@@ -1,0 +1,7 @@
+.tk-comment { color: #6e7681; font-style: italic; }
+.tk-string { color: #a5d6ff; }
+.tk-number, .tk-pfield, .tk-builtin { color: #79c0ff; }
+.tk-keyword { color: #ff7b72; }
+.tk-opcode, .tk-synth { color: #d2a8ff; }
+.tk-var, .tk-param { color: #ffa657; }
+.tk-player { color: #7ee787; }

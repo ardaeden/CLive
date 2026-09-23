@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLive</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <strong>CLive</strong>
+  <button id="start">Start</button>
+  <button id="stop" disabled>Stop</button>
+  <span id="status">stopped</span>
+  <label>BPM <input id="bpm" type="number" step="1" value="120"></label>
+  <label>Beats/bar <input id="bar" type="number" step="1" value="4"></label>
+  <span id="pos" title="bar.beat">-.-</span>
+  <span class="keys"></span>
+  <a class="help-link" href="docs/index.html" target="_blank" rel="noopener">Help</a>
+</header>
+<main>
+  <div class="editor-col">
+  <div id="tabs"></div>
+  <div class="editor-wrap">
+    <div id="flash" aria-hidden="true"></div>
+    <div id="highlight" aria-hidden="true"></div>
+    <textarea id="editor" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+  </div>
+  </div>
+  <aside>
+    <canvas id="scope" width="400" height="160"></canvas>
+    <pre id="console"></pre>
+  </aside>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

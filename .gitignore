@@ -1,0 +1,11 @@
+# Claude Code local session/project state -- not part of the app.
+.claude/
+
+# Temporary test pages used during development (see project memory: always
+# deleted after use, but ignore them too in case one is ever left behind).
+_test*.html
+
+# OS/editor cruft.
+.DS_Store
+Thumbs.db
+*.swp
