@@ -396,11 +396,47 @@ const shortcutActions = {
   indent: () => document.execCommand("insertText", false, "  "),
 };
 
+// Bracket and quote pairing: an opener also types its closer and leaves the cursor
+// between them (or wraps the selection). Typing a closer that is already next to the
+// cursor steps over it, and Backspace inside an empty pair removes both halves.
+// A quote right after a letter or digit is typed alone, so apostrophes in comments
+// ("don't") do not grow a partner. Modifiers are not checked on purpose: AltGr
+// (needed for [ and { on many layouts) reports as Ctrl+Alt.
+const PAIRS = { "(": ")", "[": "]", "{": "}", '"': '"', "'": "'" };
+const CLOSERS = new Set(Object.values(PAIRS));
+
+function autoPair(ev) {
+  if (ev.isComposing || ev.metaKey) return false;
+  const { selectionStart: a, selectionEnd: b, value } = editor;
+  if (a === b && CLOSERS.has(ev.key) && value[a] === ev.key) {
+    editor.setSelectionRange(a + 1, a + 1);
+    return true;
+  }
+  if (PAIRS[ev.key]) {
+    const isQuote = PAIRS[ev.key] === ev.key;
+    if (isQuote && a === b && /\w/.test(value[a - 1] ?? "")) return false;
+    const inner = value.slice(a, b);
+    document.execCommand("insertText", false, ev.key + inner + PAIRS[ev.key]);
+    editor.setSelectionRange(a + 1, a + 1 + inner.length);
+    return true;
+  }
+  if (a !== b) return false;
+  if (ev.key === "Backspace" && !ev.ctrlKey && !ev.altKey && a > 0 && PAIRS[value[a - 1]] === value[a]) {
+    editor.setSelectionRange(a - 1, a + 1);
+    document.execCommand("delete");
+    return true;
+  }
+  return false;
+}
+
 editor.addEventListener("keydown", (ev) => {
   const shortcut = SHORTCUTS.find((s) => matchKeys(ev, s.keys));
-  if (!shortcut) return;
-  ev.preventDefault();
-  shortcutActions[shortcut.id]();
+  if (shortcut) {
+    ev.preventDefault();
+    shortcutActions[shortcut.id]();
+  } else if (autoPair(ev)) {
+    ev.preventDefault();
+  }
 });
 
 document.querySelector(".keys").textContent = SHORTCUTS.map((s) => `${s.keys}: ${s.label}`).join(" \u00b7 ");
