@@ -9,7 +9,7 @@ export const reso = {
       default: 0.6,
       min: 0,
       max: 1,
-      doc: "How long the resonator rings: 0 is a short knock (about 0.15 s), 1 rings for up to 15 s on low notes. Live on a drone too.",
+      doc: "How long the resonator rings: 0 is a short knock (about 0.15 s), 1 rings for up to 15 s on low notes. After a player's note ends, or a drone is killed, it keeps ringing out for at most 6 s. Live on a drone too.",
     },
     bright: {
       default: 0.6,
@@ -39,7 +39,10 @@ export const reso = {
   udo: `
 opcode Reso_dsp, aa, kkkkkkkk
   kamp, kfreq, kpan, kring, kbright, kair, kmetal, kratio xin
-  kenv madsr 0.002, 0, 1, 0.5
+  ; The tail after a note ends follows ring (its decay time, the same formula as kt60
+  ; below), capped at 6 s so fast patterns with a long ring can't pile up voices.
+  irel = min(0.15 * 100 ^ i(kring), 6)
+  kenv madsr 0.002, 0, 1, irel
   ; Exciter: a short noise strike at the note start, plus sustained noise (air).
   ; Its level is made up for the low-pass, so bright changes tone, not loudness.
   astrike expseg 1, 0.015, 0.001, 1, 0.001

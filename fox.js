@@ -51,6 +51,9 @@ const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 // the rest of the source for every token.
 const NUMBER = /\d+\.?\d*|\.\d+/y;
 const NAME = /[A-Za-z_]\w*/y;
+// The start of a line that begins a new statement: "name:" or a command word that is
+// not a keyword argument (so a continuation line like `  scale="minor")` doesn't count).
+const STATEMENT_START = new RegExp(`[ \\t]*(?:[A-Za-z_]\\w*[ \\t]*:|(?:${COMMAND_WORDS.join("|")})\\b(?![ \\t]*=))`, "y");
 
 function matchAt(re, src, i) {
   re.lastIndex = i;
@@ -58,17 +61,26 @@ function matchAt(re, src, i) {
 }
 
 // Every token records where it starts and ends (at/end), so "kill a b" can tell two
-// separate names from one name glued to a "*" wildcard ("kill d*").
+// separate names from one name glued to a "*" wildcard ("kill d*"), and its 0-based
+// line, for error messages. Text that cannot be tokenized becomes a "bad" token
+// carrying the error, so only the statement it is in fails, not the whole block.
 function tokenize(src) {
   const toks = [];
   let i = 0;
   let depth = 0;
+  let line = 0;
   while (i < src.length) {
     const c = src[i];
     const start = i;
+    const startLine = line;
     const count = toks.length;
     if (c === "\n") {
+      // A bracket left open by a broken statement would otherwise swallow every line
+      // after it. Continuation lines of a real multi-line statement never start a new
+      // definition or command, so one that does ends the broken statement here.
+      if (depth > 0 && matchAt(STATEMENT_START, src, i + 1)) depth = 0;
       if (depth === 0) toks.push({ t: "nl" });
+      line++;
       i++;
     } else if (/\s/.test(c)) {
       i++;
@@ -76,9 +88,14 @@ function tokenize(src) {
       while (i < src.length && src[i] !== "\n") i++;
     } else if (c === '"' || c === "'") {
       const j = src.indexOf(c, i + 1);
-      if (j < 0) throw new Error("Unterminated string");
-      toks.push({ t: "str", v: src.slice(i + 1, j) });
-      i = j + 1;
+      const eol = src.indexOf("\n", i);
+      if (j < 0 || (eol >= 0 && eol < j)) {
+        toks.push({ t: "bad", v: "Unterminated string" });
+        i = eol < 0 ? src.length : eol;
+      } else {
+        toks.push({ t: "str", v: src.slice(i + 1, j) });
+        i = j + 1;
+      }
     } else {
       let m;
       if ((m = matchAt(NUMBER, src, i))) {
@@ -96,12 +113,13 @@ function tokenize(src) {
         toks.push({ t: "op", v: c });
         i++;
       } else {
-        throw new Error(`Unexpected character '${c}'`);
+        toks.push({ t: "bad", v: `Unexpected character '${c}'` });
+        i++;
       }
     }
-    if (toks.length > count) Object.assign(toks[toks.length - 1], { at: start, end: i });
+    if (toks.length > count) Object.assign(toks[toks.length - 1], { at: start, end: i, line: startLine });
   }
-  toks.push({ t: "nl" }, { t: "eof" });
+  toks.push({ t: "nl", line }, { t: "eof", line });
   return toks;
 }
 
@@ -176,12 +194,26 @@ class Parser {
     return t.v;
   }
 
+  // Runs every statement on its own: one that fails is skipped and reported, and the
+  // rest still run, so a typo in one line of a block doesn't silently drop the lines
+  // after it. Returns the errors as { line, message }, line being 0-based in `src`.
   run() {
+    const errors = [];
     for (;;) {
       while (this.peek().t === "nl") this.next();
-      if (this.peek().t === "eof") return;
-      this.statement();
-      if (this.peek().t !== "nl" && this.peek().t !== "eof") throw new Error("Unexpected token after statement");
+      if (this.peek().t === "eof") return errors;
+      const line = this.peek().line;
+      let end = this.pos;
+      while (this.toks[end].t !== "nl" && this.toks[end].t !== "eof") end++;
+      try {
+        const bad = this.toks.slice(this.pos, end).find((t) => t.t === "bad");
+        if (bad) throw new Error(bad.v);
+        this.statement();
+        if (this.peek().t !== "nl" && this.peek().t !== "eof") throw new Error("Unexpected token after statement");
+      } catch (e) {
+        errors.push({ line, message: e.message });
+        this.pos = end;
+      }
     }
   }
 
@@ -1237,8 +1269,17 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   };
 
   return {
-    run(code) {
-      new Parser(code, ctx).run();
+    // Runs every statement in `code`; the ones that fail are collected and thrown
+    // together at the end, after the others have run. With a lineOffset (the editor
+    // line `code` starts on, 0-based), each message is prefixed with its editor line
+    // number and the error's `lines` lists those lines (0-based) for highlighting.
+    run(code, lineOffset = null) {
+      const errors = new Parser(code, ctx).run();
+      if (!errors.length) return;
+      const where = (e) => (lineOffset === null ? "" : `line ${lineOffset + e.line + 1}: `);
+      const err = new Error(errors.map((e) => where(e) + e.message).join("\n"));
+      err.lines = lineOffset === null ? [] : errors.map((e) => lineOffset + e.line);
+      throw err;
     },
 
     start() {

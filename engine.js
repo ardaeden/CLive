@@ -369,14 +369,13 @@ export function splitCode(code) {
   const fox = [];
   classifyLines(lines).forEach(({ kind }, i) => {
     const line = lines[i];
-    if (kind === "fox") {
-      fox.push(line);
-      orc.push("");
-    } else if (kind === "score") {
+    // Each part keeps one entry per source line (blank where the line belongs to
+    // another part), so line numbers in compile and player errors match the editor.
+    fox.push(kind === "fox" ? line : "");
+    orc.push(kind === "orc" ? line : "");
+    if (kind === "score") {
       const t = line.trim();
       if (t && !t.startsWith(";")) score.push(t);
-    } else {
-      orc.push(line);
     }
   });
   return { orc: orc.join("\n"), score, fox: fox.join("\n") };

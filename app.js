@@ -300,12 +300,17 @@ function currentBlock() {
 let flashTimer = null;
 
 // Briefly highlights a range of the editor text (restarts if already flashing).
-function flash([start, end], kind = "") {
+// `marks` are sorted, non-overlapping [start, end] parts of it shown as errors instead.
+function flash([start, end], kind = "", marks = []) {
   const { value } = editor;
-  flashEl.innerHTML =
-    escapeHtml(value.slice(0, start)) +
-    `<span class="${kind}">${escapeHtml(value.slice(start, end))}</span>` +
-    escapeHtml(value.slice(end)) + "\n";
+  const span = (a, b, k) => (a < b ? `<span class="${k}">${escapeHtml(value.slice(a, b))}</span>` : "");
+  let html = escapeHtml(value.slice(0, start));
+  let pos = start;
+  for (const [a, b] of marks) {
+    html += span(pos, a, kind) + span(a, b, "err");
+    pos = b;
+  }
+  flashEl.innerHTML = html + span(pos, end, kind) + escapeHtml(value.slice(end)) + "\n";
   flashEl.scrollTop = editor.scrollTop;
   flashEl.scrollLeft = editor.scrollLeft;
   clearTimeout(flashTimer);
@@ -326,12 +331,18 @@ async function evaluate(range) {
   if (!code.trim()) return;
   if (!engine.running) return log("Press Start first.", true);
   flash(range);
+  // Player errors name the editor line and light up only the failing statements; the
+  // rest of the block still runs.
+  const firstLine = editor.value.slice(0, range[0]).split("\n").length - 1;
   try {
     (await engine.evaluate(code)).forEach(note);
-    fox.run(splitCode(code).fox);
+    fox.run(splitCode(code).fox, firstLine);
   } catch (e) {
-    log(String(e), true);
-    flash(range, "err");
+    log(String(e.message ?? e), true);
+    if (!e.lines?.length) return flash(range, "err");
+    const lines = lineTable(editor.value);
+    const marks = [...new Set(e.lines)].sort((a, b) => a - b).map((i) => [Math.max(range[0], lines[i].start), Math.min(range[1], lines[i].end)]);
+    flash(range, "", marks);
   }
 }
 
@@ -379,20 +390,66 @@ const matchKeys = (ev, keys) => {
   );
 };
 
+// The whole lines a selection touches (the cursor's line without one). A selection
+// that ends right at the start of a line does not include that line.
+function selectedLines() {
+  const { selectionStart: a, selectionEnd: b, value } = editor;
+  const start = value.lastIndexOf("\n", a - 1) + 1;
+  const last = b > a && value[b - 1] === "\n" ? b - 1 : b;
+  const nl = value.indexOf("\n", last);
+  const end = nl < 0 ? value.length : nl;
+  return { start, end, text: value.slice(start, end) };
+}
+
+// Replaces whole lines through execCommand, so the change stays on the undo stack.
+function replaceLines(start, end, text) {
+  editor.setSelectionRange(start, end);
+  document.execCommand("insertText", false, text);
+}
+
+// Tab: two spaces at the cursor, or every selected (non-empty) line indented.
+function indent() {
+  const { selectionStart: a, selectionEnd: b } = editor;
+  if (a === b) return document.execCommand("insertText", false, "  ");
+  const { start, end, text } = selectedLines();
+  const next = text.replace(/^(?=.)/gm, "  ");
+  replaceLines(start, end, next);
+  editor.setSelectionRange(start, start + next.length);
+}
+
+// Shift+Tab: up to two leading spaces removed from the cursor's line or every selected line.
+function outdent() {
+  const { selectionStart: a, selectionEnd: b } = editor;
+  const { start, end, text } = selectedLines();
+  const next = text.replace(/^ {1,2}/gm, "");
+  if (next === text) return;
+  replaceLines(start, end, next);
+  if (a === b) {
+    const at = Math.max(start, a - (text.length - next.length));
+    editor.setSelectionRange(at, at);
+  } else {
+    editor.setSelectionRange(start, start + next.length);
+  }
+}
+
 const shortcutActions = {
   evalBlock: () => evaluate(currentBlock()),
   evalLine: () => evaluate(statementRange(false)),
   killLine: killPlayers,
   silence: () => fox.clear(),
-  indent: () => document.execCommand("insertText", false, "  "),
+  indent,
+  outdent,
 };
 
 // Bracket and quote pairing: an opener also types its closer and leaves the cursor
 // between them (or wraps the selection). Typing a closer that is already next to the
 // cursor steps over it, and Backspace inside an empty pair removes both halves.
-// A quote right after a letter or digit is typed alone, so apostrophes in comments
-// ("don't") do not grow a partner. Modifiers are not checked on purpose: AltGr
-// (needed for [ and { on many layouts) reports as Ctrl+Alt.
+// Without a selection, a closer is only added where nothing is glued to the right of
+// the cursor (end of line, a space, a closer, a comma or a comment), so typing "(" in
+// front of an existing word doesn't leave "()word". A quote right after a letter or
+// digit is typed alone, so apostrophes in comments ("don't") do not grow a partner.
+// Modifiers are not checked on purpose: AltGr (needed for [ and { on many layouts)
+// reports as Ctrl+Alt.
 const PAIRS = { "(": ")", "[": "]", "{": "}", '"': '"', "'": "'" };
 const CLOSERS = new Set(Object.values(PAIRS));
 
@@ -405,6 +462,7 @@ function autoPair(ev) {
   }
   if (PAIRS[ev.key]) {
     const isQuote = PAIRS[ev.key] === ev.key;
+    if (a === b && !/^$|[\s)\]},;]/.test(value[a] ?? "")) return false;
     if (isQuote && a === b && /\w/.test(value[a - 1] ?? "")) return false;
     const inner = value.slice(a, b);
     document.execCommand("insertText", false, ev.key + inner + PAIRS[ev.key]);
