@@ -8,6 +8,7 @@ import http.server
 import os
 import socketserver
 import sys
+import urllib.parse
 import webbrowser
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -25,6 +26,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".js": "text/javascript",
         ".wasm": "application/wasm",
     }
+
+    # Hidden files and folders (.git, .claude, ...) are not part of the app; don't serve them.
+    def send_head(self):
+        # Decoded first, the same way translate_path does, so %2e can't sneak a dot past.
+        path = urllib.parse.unquote(self.path.split("?", 1)[0].split("#", 1)[0])
+        if any(part.startswith(".") for part in path.replace("\\", "/").split("/")):
+            self.send_error(404)
+            return None
+        return super().send_head()
 
     def end_headers(self):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")

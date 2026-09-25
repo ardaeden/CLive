@@ -1,5 +1,5 @@
 // Syntax highlighter for mixed Csound orchestra / score / player code.
-import { FOX_START, SCORE_LINE, bracketDelta } from "./engine.js";
+import { classifyLines } from "./engine.js";
 import { COMMAND_WORDS, FUNCTIONS } from "./registry.js";
 
 const KEYWORDS = new Set([
@@ -98,29 +98,16 @@ function classifyFox(tokens) {
   });
 }
 
+// Uses the evaluator's own line classification, so what is colored as player code,
+// score or orchestra is exactly what Ctrl+Enter will run as such.
 export function highlight(code) {
   const state = { block: false };
-  let depth = 0;
-  let foxDepth = 0;
-  const html = code.split("\n").map((line) => {
-    const t = line.trim();
-    let fox = false;
-    if (!state.block) {
-      if (foxDepth > 0) {
-        fox = true;
-        foxDepth += bracketDelta(line);
-      } else if (depth === 0 && FOX_START.some((re) => re.test(line))) {
-        fox = true;
-        foxDepth = Math.max(0, bracketDelta(line));
-      }
-    }
+  const lines = code.split("\n");
+  const kinds = classifyLines(lines);
+  const html = lines.map((line, i) => {
     const tokens = lex(line, state);
-    if (fox) classifyFox(tokens);
-    else {
-      if (/^(instr|opcode)\b/.test(t)) depth++;
-      classifyOrc(tokens, depth === 0 && SCORE_LINE.test(line));
-      if (/^(endin|endop)\b/.test(t)) depth = Math.max(0, depth - 1);
-    }
+    if (kinds[i].kind === "fox") classifyFox(tokens);
+    else classifyOrc(tokens, kinds[i].kind === "score");
     return tokens
       .map((tk) => {
         const cls = tk.c ?? (tk.k === "comment" || tk.k === "string" || tk.k === "number" ? tk.k : null);

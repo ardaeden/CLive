@@ -297,13 +297,6 @@ function currentBlock() {
   return [lines[first].start, lines[last].end];
 }
 
-function currentLine() {
-  const { selectionStart: s, value } = editor;
-  const a = value.lastIndexOf("\n", s - 1) + 1;
-  const b = value.indexOf("\n", s);
-  return [a, b === -1 ? value.length : b];
-}
-
 let flashTimer = null;
 
 // Briefly highlights a range of the editor text (restarts if already flashing).
@@ -342,10 +335,11 @@ async function evaluate(range) {
   }
 }
 
-// The selection, or the whole player statement the cursor is in (it may span lines).
-function playerRange() {
+// The whole player statement the cursor is in (it may span several lines), or just the
+// cursor's line for Csound code. With useSelection, a selection wins over both.
+function statementRange(useSelection) {
   const { selectionStart: s, selectionEnd: e, value } = editor;
-  if (s !== e) return [s, e];
+  if (useSelection && s !== e) return [s, e];
   const lines = lineTable(value);
   const i = lineIndexAt(lines, s);
   const info = classifyLines(value.split("\n"));
@@ -360,7 +354,7 @@ function playerRange() {
 // like "kill name".
 function killPlayers() {
   if (!engine.running) return log("Press Start first.", true);
-  const range = playerRange();
+  const range = statementRange(true);
   const code = editor.value.slice(range[0], range[1]);
   const names = [...new Set([...splitCode(code).fox.matchAll(/^\s*([A-Za-z_]\w*)\s*:/gm)].map((m) => m[1]))];
   if (!names.length) return log("No player, reverb, drone or bus definition here to kill.", true);
@@ -387,12 +381,9 @@ const matchKeys = (ev, keys) => {
 
 const shortcutActions = {
   evalBlock: () => evaluate(currentBlock()),
-  evalLine: () => evaluate(currentLine()),
+  evalLine: () => evaluate(statementRange(false)),
   killLine: killPlayers,
-  silence: () => {
-    fox.clear();
-    engine.silence();
-  },
+  silence: () => fox.clear(),
   indent: () => document.execCommand("insertText", false, "  "),
 };
 

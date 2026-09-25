@@ -92,22 +92,17 @@ function droneInstrSource(name, s) {
 ${reads.join("\n")}
   aL, aR ${call} kamp, kfreq, kpan${args.length ? ", " + args.join(", ") : ""}
   outs aL, aR
+  ; Send slots are read at k-rate too, so re-pointing send= at another reverb takes
+  ; effect on the running drone, not only the next time it starts.
   Ss1 sprintf "drone%d_s1slot", islot
   Sa1 sprintf "drone%d_s1amt", islot
   Ss2 sprintf "drone%d_s2slot", islot
   Sa2 sprintf "drone%d_s2amt", islot
   Ss3 sprintf "drone%d_s3slot", islot
   Sa3 sprintf "drone%d_s3amt", islot
-  ks1 chnget Ss1
-  ka1 chnget Sa1
-  ks2 chnget Ss2
-  ka2 chnget Sa2
-  ks3 chnget Ss3
-  ka3 chnget Sa3
-  is1 = i(ks1)
-  is2 = i(ks2)
-  is3 = i(ks3)
-  revsend aL, aR, is1, ka1, is2, ka2, is3, ka3`;
+  revsendk1 aL, aR, chnget:k(Ss1), chnget:k(Sa1)
+  revsendk1 aL, aR, chnget:k(Ss2), chnget:k(Sa2)
+  revsendk1 aL, aR, chnget:k(Ss3), chnget:k(Sa3)`;
   return csoundSource(`${name} (drone)`, droneInstance(s.instr), body);
 }
 const DRONE_INSTR_SOURCE = Object.entries(DRONABLE_SYNTHS)
@@ -206,8 +201,8 @@ opcode revsend, 0, aaikikik
   revsend1 aInL, aInR, iS3, kA3
 endop
 
-; Like revsend1, but the reverb slot is k-rate too, so a running bus return can be
-; pointed at a different reverb without restarting it.
+; Like revsend1, but the reverb slot is k-rate too, so a running drone or bus return
+; can be pointed at a different reverb without restarting it.
 opcode revsendk1, 0, aakk
   aInL, aInR, kSlot, kAmt xin
   if kSlot >= 0 && kAmt > 0 then
@@ -307,15 +302,44 @@ export function bracketDelta(line) {
   return d;
 }
 
+// Whether a /* ... */ comment is still open at the end of `line`, given whether one was
+// open at its start. Quotes and ; line comments hide a /* the same way Csound reads them.
+function blockCommentOpenAfter(line, open) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (open) {
+      if (c === "*" && line[i + 1] === "/") {
+        open = false;
+        i++;
+      }
+    } else if (quote) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === ";") break;
+    else if (c === "/" && line[i + 1] === "*") {
+      open = true;
+      i++;
+    }
+  }
+  return open;
+}
+
 // Classifies every line as player code ("fox"), classic score ("score") or Csound
 // orchestra ("orc"). A player statement can span several lines; `statement` is the
 // index of the line where the statement containing this line starts (-1 otherwise).
+// A line that starts inside a /* */ comment is always "orc" (Csound skips it), so
+// commented-out player code or score lines are never run.
 export function classifyLines(lines) {
   let depth = 0;
   let foxDepth = 0;
   let statement = -1;
+  let inComment = false;
   return lines.map((line, i) => {
     const t = line.trim();
+    const commented = inComment;
+    inComment = blockCommentOpenAfter(line, inComment);
+    if (commented) return { kind: "orc", statement: -1 };
     if (foxDepth > 0) {
       foxDepth += bracketDelta(line);
       return { kind: "fox", statement };
@@ -380,6 +404,25 @@ export function createEngine(Csound, { onMessage }) {
   const dronesRunning = new Map();
   const busesRunning = new Set();
   const aliases = new Map();
+  // Last value written to each control channel this session. Drones and buses are
+  // refreshed every tick (LIMITS.droneUpdateMs), but most of their values sit still, and
+  // every write is a message to the audio thread -- so only changes are sent.
+  const channelCache = new Map();
+
+  function setChannel(name, value) {
+    if (channelCache.get(name) === value) return;
+    channelCache.set(name, value);
+    return csound.setControlChannel(name, value);
+  }
+
+  // Writes up to three [slot, amount] send pairs into prefix + s1slot/s1amt ... s3amt;
+  // unused pairs get slot -1 so the Csound side skips them.
+  function sendWrites(prefix, sends) {
+    return [0, 1, 2].flatMap((i) => {
+      const [s, a] = sends[i] ?? [-1, 0];
+      return [setChannel(`${prefix}s${i + 1}slot`, s), setChannel(`${prefix}s${i + 1}amt`, a)];
+    });
+  }
 
   const aliasFor = (name) => {
     if (!aliases.has(name)) aliases.set(name, 300 + aliases.size);
@@ -427,7 +470,9 @@ export function createEngine(Csound, { onMessage }) {
         analyser.fftSize = 2048;
         node.connect(analyser);
 
-        // A new Csound session knows none of the instruments or reverbs of the previous one.
+        // A new Csound session knows none of the instruments, reverbs or channel values of
+        // the previous one.
+        channelCache.clear();
         instrs.clear();
         BUILTIN_INSTRS.forEach((n) => instrs.add(n));
         aliases.clear();
@@ -473,11 +518,16 @@ export function createEngine(Csound, { onMessage }) {
         .some((l) => l.replace(/;.*$/, "").trim());
       if (hasOrc) {
         const text = orc.replace(/^(\s*)instr\s+([A-Za-z_]\w*)[ \t]*(?:;.*)?$/gm, (_, ws, name) => `${ws}instr ${aliasFor(name)} ; ${name}`);
+        // Numbers from 9600 up belong to bus variants, drones, returns and the clock;
+        // redefining one would silently break them, so refuse before compiling.
+        const numbers = [...text.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/^[ \t]*instr[ \t]+([^;\n]+)/gm)]
+          .flatMap((m) => m[1].split(",").map((x) => x.trim()))
+          .filter((n) => /^\d+(\.\d+)?$/.test(n));
+        const reserved = numbers.filter((n) => Number(n) >= 9600);
+        if (reserved.length) throw new Error(`instr ${reserved.join(", ")}: numbers 9600 and above are reserved for CLive itself, use a lower number`);
         const rc = await csound.compileOrc(text);
         if (rc !== 0) throw new Error("Orchestra compile error (see console).");
-        for (const m of text.matchAll(/^[ \t]*instr[ \t]+([^;\n]+)/gm)) {
-          for (const n of m[1].split(",").map((x) => x.trim())) if (/^\d+(\.\d+)?$/.test(n) && !/^99[89]\d$/.test(n)) instrs.add(n);
-        }
+        numbers.forEach((n) => instrs.add(n));
         const defined = [...orc.matchAll(/^[ \t]*instr[ \t]+([^;\n]+)/gm)].flatMap((m) => m[1].split(",").map((x) => x.trim()));
         report.push(defined.length ? `compiled instr ${defined.join(", ")}` : "compiled Csound code");
       }
@@ -507,7 +557,7 @@ export function createEngine(Csound, { onMessage }) {
 
     // Sets a reverb's parameters and starts its return instrument if needed.
     async defineReverb(slot, params) {
-      for (const [k, v] of Object.entries(params)) await csound.setControlChannel(`rev${slot}_${k}`, v);
+      await Promise.all(Object.entries(params).map(([k, v]) => setChannel(`rev${slot}_${k}`, v)));
       if (!reverbsRunning.has(slot)) {
         reverbsRunning.add(slot);
         await csound.inputMessage(`i ${reverbInstance(slot)} 0 -1 ${slot}`);
@@ -522,18 +572,13 @@ export function createEngine(Csound, { onMessage }) {
     // Writes a drone's channels without touching whether it is running: amp/freq/pan
     // are plain numbers, sends up to three [slot, amount] pairs, extras positional.
     async updateDrone(slot, { amp, freq, pan, sends, extras } = {}) {
-      const set = (name, value) => csound.setControlChannel(`drone${slot}_${name}`, value);
+      const prefix = `drone${slot}_`;
       const writes = [];
-      if (amp !== undefined) writes.push(set("amp", amp));
-      if (freq !== undefined) writes.push(set("freq", freq));
-      if (pan !== undefined) writes.push(set("pan", pan));
-      if (sends) {
-        for (let i = 0; i < 3; i++) {
-          const [s, a] = sends[i] ?? [-1, 0];
-          writes.push(set(`s${i + 1}slot`, s), set(`s${i + 1}amt`, a));
-        }
-      }
-      if (extras) extras.forEach((v, i) => writes.push(set(`x${i + 1}`, v)));
+      if (amp !== undefined) writes.push(setChannel(`${prefix}amp`, amp));
+      if (freq !== undefined) writes.push(setChannel(`${prefix}freq`, freq));
+      if (pan !== undefined) writes.push(setChannel(`${prefix}pan`, pan));
+      if (sends) writes.push(...sendWrites(prefix, sends));
+      if (extras) extras.forEach((v, i) => writes.push(setChannel(`${prefix}x${i + 1}`, v)));
       await Promise.all(writes);
     },
 
@@ -558,16 +603,11 @@ export function createEngine(Csound, { onMessage }) {
     // Writes a bus's amp/pan/send channels without touching whether its return instrument
     // is running -- used every tick for cosr()/lineto()-driven values, same as a drone.
     async updateBus(slot, { amp, pan, sends } = {}) {
-      const set = (name, value) => csound.setControlChannel(`bus${slot}_${name}`, value);
+      const prefix = `bus${slot}_`;
       const writes = [];
-      if (amp !== undefined) writes.push(set("amp", amp));
-      if (pan !== undefined) writes.push(set("pan", pan));
-      if (sends) {
-        for (let i = 0; i < 3; i++) {
-          const [s, a] = sends[i] ?? [-1, 0];
-          writes.push(set(`s${i + 1}slot`, s), set(`s${i + 1}amt`, a));
-        }
-      }
+      if (amp !== undefined) writes.push(setChannel(`${prefix}amp`, amp));
+      if (pan !== undefined) writes.push(setChannel(`${prefix}pan`, pan));
+      if (sends) writes.push(...sendWrites(prefix, sends));
       await Promise.all(writes);
     },
 
@@ -587,12 +627,12 @@ export function createEngine(Csound, { onMessage }) {
 
     async setTempo(value) {
       bpm = value;
-      if (running) await csound.setControlChannel("bpm", value);
+      if (running) await setChannel("bpm", value);
     },
 
     async setBar(beats) {
       bar = beats;
-      if (running) await csound.setControlChannel("bar", beats);
+      if (running) await setChannel("bar", beats);
     },
 
     async silence() {

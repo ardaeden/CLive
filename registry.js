@@ -29,7 +29,7 @@ export const LIMITS = {
 
 export const LIMIT_DOCS = {
   reverbSlots: "Reverbs that can exist at the same time.",
-  maxSends: "Reverb sends per player.",
+  maxSends: "Reverb sends per player, drone or bus.",
   defaultSend: "Send amount used when you write send=rev1 without an amount.",
   lookaheadSeconds: "How far ahead (in seconds) notes are handed to Csound. Notes always start exactly on the beat grid.",
   nextBarLeadSeconds: "A change evaluated within this many seconds of its target (a bar line, or a beat line with updates \"beat\") waits for the following one instead.",
@@ -128,6 +128,20 @@ export const DRUMS = {
   },
 };
 
+// Built-in instrument numbers must not collide, and must leave room for what is
+// derived from them: aliases for named instruments start at 300, and a dronable synth's
+// continuous voice runs at its number + 9800, which has to stay below the bus returns
+// (9975). Checked here, where both SYNTHS and DRUMS are known.
+{
+  const owner = new Map();
+  for (const [name, x] of [...Object.entries(SYNTHS), ...Object.values(DRUMS).map((d) => [d.name, d])]) {
+    if (owner.has(x.instr)) throw new Error(`Built-in '${name}' and '${owner.get(x.instr)}' both use instr ${x.instr}`);
+    owner.set(x.instr, name);
+    if (!(x.instr >= 1 && x.instr < 300)) throw new Error(`Built-in '${name}' uses instr ${x.instr}; built-ins must be 1-299`);
+    if (x.drone && x.instr >= 175) throw new Error(`Dronable synth '${name}' uses instr ${x.instr}; its drone voice (+9800) would collide with the bus returns, keep it below 175`);
+  }
+}
+
 export const SCALES = {
   major: [0, 2, 4, 5, 7, 9, 11],
   minor: [0, 2, 3, 5, 7, 8, 10],
@@ -188,7 +202,7 @@ export const BUS_PARAMS = {
 
 export const SHORTCUTS = [
   { id: "evalBlock", label: "block/selection", keys: "Ctrl+Enter", doc: "Evaluate the selection, or the block around the cursor (blocks are separated by blank lines). The console logs what happened: when players start, what was compiled and scheduled." },
-  { id: "evalLine", label: "line", keys: "Alt+Enter", doc: "Evaluate the current line only." },
+  { id: "evalLine", label: "line", keys: "Alt+Enter", doc: "Evaluate the current line only; when it is part of a player statement that spans several lines, the whole statement." },
   {
     id: "killLine",
     label: "kill player",
@@ -210,7 +224,7 @@ export const COMMANDS = [
   { syntax: "name: reverb(decay=0.9, ...)", doc: "Create or update a reverb return. Changes apply immediately and keep the reverb running." },
   { syntax: "name: bus(amp=1, pan=0, send=rev1(0.3))", doc: "Create or update a bus: a mixing group. amp, pan and send update immediately, live, the same as a drone's (plain numbers, cosr() or lineto()). send= feeds the whole group to up to three reverbs. See the Buses page." },
   { syntax: "name: synth@busname(degrees, dur=1, ...)", doc: "A player whose whole output goes to a bus instead of straight to the speakers, so the bus's amp/pan control it (and everything else routed there) together. The bus must already exist. send= still works independently." },
-  { syntax: "kill name", doc: "Stop a player at the next bar line (or beat, with updates \"beat\"), or remove a reverb, drone or bus immediately." },
+  { syntax: "kill name", doc: "Stop a player at the next bar line (or beat, with updates \"beat\"), or remove a reverb, drone or bus immediately. Several names can follow, separated by spaces or commas (kill p1 p2), and * matches any part of a name (kill d*). Anything still sending to a killed reverb, or routed to a killed bus, goes silent until you re-evaluate it." },
   { syntax: "kill d*", doc: "Kill every player, reverb, drone and bus whose name matches. * matches any characters, so kill d* stops d1, d2, d10 ..." },
   { syntax: "tempo 120", doc: "Set the tempo (beats per minute). Everything stays locked because all timing is in beats." },
   { syntax: "bar 4", doc: "Set the number of beats per bar." },
@@ -373,7 +387,7 @@ export const GUIDE = {
     paragraphs: [
       "A reverb is a shared return bus. Players send part of their signal to it, and the reverb itself is a running instrument with its own parameters.",
       "Define it with `rev1: reverb(...)`, then send to it from any player with `send=rev1(amount)`. Re-evaluating the reverb line changes its parameters live. A player can send to up to three reverbs, and the amount can be a list.",
-      "After `kill rev1` the sends to it fall silent, and a reverb defined later may take over its slot, so re-evaluate the players that sent to it.",
+      "After `kill rev1` the sends to it fall silent, and they stay silent: a reverb defined later never picks them up, even if it reuses the same slot. Re-evaluate the players that sent to it (pointing at another reverb) to hear their reverb again.",
     ],
     example: 'rev1: reverb(decay=0.9, lowcut=200, highcut=6000, level=0.5)\nrev2: reverb(decay=0.5, lowcut=400, highcut=9000, level=0.3)\np1: pluck([0, 2, 4], dur=1/2, send=[rev1(0.4), rev2(0.1)])',
   },

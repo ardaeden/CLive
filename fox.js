@@ -43,14 +43,30 @@ const LOOKAHEAD_S = LIMITS.lookaheadSeconds;
 const NEXT_BAR_LEAD_S = LIMITS.nextBarLeadSeconds;
 const EPS = 1e-6;
 
+const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+
 // ---- tokenizer ----
 
+// Sticky (/y) patterns match exactly at lastIndex, so the tokenizer never has to copy
+// the rest of the source for every token.
+const NUMBER = /\d+\.?\d*|\.\d+/y;
+const NAME = /[A-Za-z_]\w*/y;
+
+function matchAt(re, src, i) {
+  re.lastIndex = i;
+  return re.exec(src)?.[0];
+}
+
+// Every token records where it starts and ends (at/end), so "kill a b" can tell two
+// separate names from one name glued to a "*" wildcard ("kill d*").
 function tokenize(src) {
   const toks = [];
   let i = 0;
   let depth = 0;
   while (i < src.length) {
     const c = src[i];
+    const start = i;
+    const count = toks.length;
     if (c === "\n") {
       if (depth === 0) toks.push({ t: "nl" });
       i++;
@@ -64,15 +80,14 @@ function tokenize(src) {
       toks.push({ t: "str", v: src.slice(i + 1, j) });
       i = j + 1;
     } else {
-      const rest = src.slice(i);
       let m;
-      if ((m = /^(\d+\.?\d*|\.\d+)/.exec(rest))) {
-        toks.push({ t: "num", v: parseFloat(m[1]) });
-        i += m[1].length;
-      } else if ((m = /^[A-Za-z_]\w*/.exec(rest))) {
-        toks.push({ t: "id", v: m[0] });
-        i += m[0].length;
-      } else if (rest.startsWith("**")) {
+      if ((m = matchAt(NUMBER, src, i))) {
+        toks.push({ t: "num", v: parseFloat(m) });
+        i += m.length;
+      } else if ((m = matchAt(NAME, src, i))) {
+        toks.push({ t: "id", v: m });
+        i += m.length;
+      } else if (src.startsWith("**", i)) {
         toks.push({ t: "op", v: "**" });
         i += 2;
       } else if ("+-*/%()[],=:@".includes(c)) {
@@ -84,6 +99,7 @@ function tokenize(src) {
         throw new Error(`Unexpected character '${c}'`);
       }
     }
+    if (toks.length > count) Object.assign(toks[toks.length - 1], { at: start, end: i });
   }
   toks.push({ t: "nl" }, { t: "eof" });
   return toks;
@@ -181,7 +197,7 @@ class Parser {
     }
     if (t.t === "id" && t.v === "kill") {
       this.next();
-      this.ctx.kill(this.namePattern());
+      for (const pattern of this.namePatterns()) this.ctx.kill(pattern);
       return;
     }
     if (t.t === "id" && t.v === "clear") {
@@ -197,12 +213,20 @@ class Parser {
     throw new Error("Unsupported statement");
   }
 
-  // A bare name after "kill", letters/digits/underscore and "*" wildcards: d1, rev2, d*, *.
-  namePattern() {
-    let s = "";
-    while (this.peek().t === "id" || this.isOp("*")) s += this.next().v;
-    if (!s) throw new Error("Expected a player or reverb name after 'kill'");
-    return s;
+  // The names after "kill", separated by spaces or commas: "kill d1 rev2", "kill d*, p1".
+  // Each is letters/digits/underscore and "*" wildcards written without spaces: d1, d*, *.
+  namePatterns() {
+    const patterns = [];
+    let prevEnd = -1;
+    while (this.peek().t === "id" || this.isOp("*") || this.isOp(",")) {
+      const tok = this.next();
+      if (tok.v === ",") prevEnd = -1;
+      else if (tok.at === prevEnd && patterns.length) patterns[patterns.length - 1] += tok.v;
+      else patterns.push(tok.v);
+      if (tok.v !== ",") prevEnd = tok.end;
+    }
+    if (!patterns.length) throw new Error("Expected a name after 'kill', e.g. kill p1 or kill d*");
+    return patterns;
   }
 
   call() {
@@ -320,10 +344,34 @@ class Parser {
         if (!impl) throw new Error(`Function '${t.v}' is not implemented`);
         return impl(this.args().args);
       }
-      throw new Error(`Unknown name '${t.v}'. Reverbs must be defined first, e.g. ${t.v}: reverb(decay=0.9)`);
+      const guess = closest(t.v, [...Object.keys(FUNCTIONS), ...this.ctx.reverbNames()]);
+      throw new Error(
+        `Unknown name '${t.v}'${guess ? ` (did you mean '${guess}'?)` : ""}. In a pattern a name is r (a rest), a function ` +
+          `(${Object.keys(FUNCTIONS).join(", ")}) or a reverb, which must be defined first, e.g. ${t.v}: reverb(decay=0.9)`,
+      );
     }
     throw new Error("Unexpected token in expression");
   }
+}
+
+// The candidate within two edits of `word` (typos like "rnage"), or undefined.
+function closest(word, candidates) {
+  const dist = (a, b) => {
+    let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      const next = [i];
+      for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      row = next;
+    }
+    return row[b.length];
+  };
+  let best;
+  let bestDist = 3;
+  for (const c of candidates) {
+    const d = dist(word, c);
+    if (d < bestDist) [best, bestDist] = [c, d];
+  }
+  return best;
 }
 
 // Text for a value shown by log(): numbers to three decimals, chords as (a, b), rests as r.
@@ -369,7 +417,7 @@ function makeLinetoDyn(from, to, seconds) {
     const L = dyn.lineto;
     if (!L.bound) throw new Error("lineto() only works on a drone's or a bus's own parameters (a definition with no dur=), used directly -- not on a player, a reverb, or combined with arithmetic.");
     if (!L.armed) return L.to;
-    const t = L.rampBeats <= 0 ? 1 : Math.min(1, Math.max(0, (beat - L.startBeat) / L.rampBeats));
+    const t = L.rampBeats <= 0 ? 1 : clamp((beat - L.startBeat) / L.rampBeats, 0, 1);
     return L.from + (L.to - L.from) * t;
   });
   dyn.lineto = { from, to, seconds, bound: false, armed: false };
@@ -420,8 +468,9 @@ function armLinetoAll(now, values) {
 // One entry per name in FUNCTIONS (registry.js), which holds their documentation.
 const FUNCTION_IMPLS = {
   range(args) {
-    const [a, b] = args.length > 1 ? args : [0, args[0]];
-    const length = Math.max(0, num(b, "range") - num(a, "range"));
+    if (args.length < 1 || args.length > 2) throw new Error("range(end) or range(start, end) takes one or two numbers");
+    const [a, b] = (args.length > 1 ? args : [0, args[0]]).map((x) => num(x, "range"));
+    const length = Math.max(0, Math.ceil(b - a));
     if (length > LIMITS.maxListLength) throw new Error(`range() is limited to ${LIMITS.maxListLength} items`);
     return Array.from({ length }, (_, i) => a + i);
   },
@@ -521,6 +570,10 @@ function drumPattern(v) {
   return typeof v === "string" ? parseDrums(v.replace(/\s+/g, "")).items : v;
 }
 
+// Marks a player whose bus was killed: its notes are dropped instead of being sent to
+// a slot that may later belong to another bus.
+const DEAD_BUS = -1;
+
 const asList = (v, dflt) => (v === undefined ? [dflt] : Array.isArray(v) ? v : [v]);
 const MAX_STEPS_PER_TICK = 512;
 // How many of a player's most recently emitted beats to remember, to tell whether a
@@ -563,7 +616,7 @@ function degreeToMidi(d, scale, root, oct) {
 // itself so no combination of those can send a synth a frequency that aliases.
 function midiToFreq(midi) {
   const hz = 440 * 2 ** ((midi - 69) / 12);
-  return Math.min(LIMITS.maxFreq, Math.max(LIMITS.minFreq, hz));
+  return clamp(hz, LIMITS.minFreq, LIMITS.maxFreq);
 }
 
 export function createFox(engine, { onTempo, onBar, onError, onLog }) {
@@ -591,8 +644,80 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   // currently is" means. Updated every tick in resolveDroneChannels/resolveBusChannels;
   // cleared when the drone or bus is killed.
   const paramMemory = new Map();
-  const defaults = { scale: "major", root: 0, updateUnit: "bar" };
+  const INITIAL_DEFAULTS = { scale: "major", root: 0, updateUnit: "bar" };
+  const defaults = { ...INITIAL_DEFAULTS };
   let timer = null;
+
+  // Every name belongs to exactly one kind of thing. Throws if `name` is already taken by
+  // another kind; `hints` adds a kind-specific suggestion to the message.
+  const KINDS = { player: players, reverb: reverbs, drone: drones, bus: buses };
+  function claimName(name, kind, hints = {}) {
+    for (const [other, map] of Object.entries(KINDS)) {
+      if (other !== kind && map.has(name)) throw new Error(`'${name}' is a ${other}, pick another name${hints[other] ?? ""}`);
+    }
+  }
+
+  // Names that already mean something inside a pattern. A reverb (the only kind of
+  // definition a pattern can refer to by name) called one of these would shadow it, so
+  // [0, r, 2] or range(4) would silently stop working.
+  const RESERVED_NAMES = new Set(["r", "P", ...Object.keys(FUNCTIONS)]);
+  function checkNotReserved(name, kind) {
+    if (RESERVED_NAMES.has(name)) throw new Error(`'${name}' already means something in patterns (r, P and the function names are reserved), pick another name for the ${kind}`);
+  }
+
+  // Every spec that can hold a send or a bus route: running and pending players,
+  // drones and buses.
+  function* allSpecs() {
+    for (const p of players.values()) {
+      if (p.spec) yield p.spec;
+      if (p.pending?.spec) yield p.pending.spec;
+    }
+    yield* drones.values();
+    yield* buses.values();
+  }
+
+  // A killed reverb's slot may be handed to the next new reverb, so everything still
+  // sending to it is detached now: those sends go silent (as documented) instead of
+  // later feeding whichever reverb reuses the slot. Returns the names affected.
+  function detachReverb(slot) {
+    const affected = new Set();
+    for (const spec of allSpecs()) {
+      if (!spec.sends?.some((x) => x.slot === slot)) continue; // log() specs have no sends
+      spec.sends = spec.sends.filter((x) => x.slot !== slot);
+      affected.add(spec.label ?? spec.name);
+      if (spec.name) paramMemory.delete(`${spec.name}:send${slot}`);
+    }
+    return [...affected];
+  }
+
+  // The same for a killed bus: players routed to it go silent until re-evaluated.
+  function detachBus(slot) {
+    const affected = new Set();
+    for (const spec of allSpecs()) {
+      if (spec.bus !== slot) continue;
+      spec.bus = DEAD_BUS;
+      affected.add(spec.label);
+    }
+    return [...affected];
+  }
+
+  // The lowest slot number not in `used`.
+  function freeSlot(used, count, what) {
+    for (let k = 0; k < count; k++) if (!used.has(k)) return k;
+    throw new Error(`At most ${count} ${what} at a time`);
+  }
+
+  // Drops everything paramMemory remembers about a killed drone or bus.
+  function forget(name) {
+    for (const k of paramMemory.keys()) if (k.startsWith(`${name}:`)) paramMemory.delete(k);
+  }
+
+  // Stops every player and silences whatever is still sounding.
+  function silenceAll() {
+    players.clear();
+    cancelTimers();
+    engine.silence();
+  }
 
   function scaleOf(v) {
     if (Array.isArray(v)) {
@@ -610,6 +735,16 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
     return list.map((x) => {
       if (!(x instanceof SendRef)) throw new Error("send= expects reverb names, e.g. send=rev1(0.2) or send=[rev1(0.2), rev2]");
       return { slot: x.slot, amount: asList(x.amount, DEFAULT_SEND) };
+    });
+  }
+
+  // A drone's or bus's current send amounts at `now`, clamped for Csound; the raw values
+  // are remembered once it is running (see resolveDroneChannels).
+  function resolveSends(spec, now, remember) {
+    return spec.sends.map((x) => {
+      const raw = num(pick(x.amount, 0), "send amount", now.beat);
+      if (remember) paramMemory.set(`${spec.name}:send${x.slot}`, raw);
+      return [x.slot, clamp(raw, 0, 1)];
     });
   }
 
@@ -668,7 +803,7 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   // before that, and must not overwrite a real remembered value with a throwaway one).
   function resolveDroneChannels(spec, now) {
     const remember = spec.slot !== undefined;
-    const oct = Math.min(PLAYER_PARAMS.oct.max, Math.max(PLAYER_PARAMS.oct.min, num(spec.oct, "oct", now.beat)));
+    const oct = clamp(num(spec.oct, "oct", now.beat), PLAYER_PARAMS.oct.min, PLAYER_PARAMS.oct.max);
     const root = spec.root !== undefined ? num(spec.root, "root", now.beat) : defaults.root;
     const scale = scaleOf(spec.scale ?? defaults.scale);
     const degree = num(spec.degree, "degree", now.beat);
@@ -679,16 +814,12 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
     const rawAmp = num(spec.amp, "amp", now.beat);
     const amp = VOICE_GAIN * rawAmp;
     const rawPan = num(spec.pan, "pan", now.beat);
-    const pan = Math.min(1, Math.max(0, (rawPan + 1) / 2));
-    const sends = spec.sends.map((x) => {
-      const rawAmt = num(pick(x.amount, 0), "send amount", now.beat);
-      if (remember) paramMemory.set(`${spec.name}:send${x.slot}`, rawAmt);
-      return [x.slot, Math.min(1, Math.max(0, rawAmt))];
-    });
+    const pan = clamp((rawPan + 1) / 2, 0, 1);
+    const sends = resolveSends(spec, now, remember);
     const extras = spec.extras.map(({ key, p, value }) => {
       const raw = num(value, key, now.beat);
       if (remember) paramMemory.set(`${spec.name}:${key}`, raw);
-      const v = Math.min(p.max, Math.max(p.min, raw));
+      const v = clamp(raw, p.min, p.max);
       return p.unit === "beats" ? (v * 60) / now.bpm : v;
     });
     if (remember) {
@@ -701,19 +832,12 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   }
 
   function defineDrone(name, call) {
-    if (reverbs.has(name)) throw new Error(`'${name}' is a reverb, pick another name`);
-    if (buses.has(name)) throw new Error(`'${name}' is a bus, pick another name`);
-    if (players.has(name)) throw new Error(`'${name}' is a player, pick another name (or add dur= to redefine it as one)`);
+    claimName(name, "drone", { player: " (or add dur= to redefine it as one)" });
     const spec = buildDroneSpec(name, call);
     const now = requireNow();
     armLineto(spec, now);
     const existing = drones.get(name);
-    let slot = existing?.slot;
-    if (slot === undefined) {
-      const used = new Set([...drones.values()].map((d) => d.slot));
-      slot = Array.from({ length: LIMITS.droneSlots }, (_, k) => k).find((k) => !used.has(k));
-      if (slot === undefined) throw new Error(`At most ${LIMITS.droneSlots} drones at a time`);
-    }
+    const slot = existing?.slot ?? freeSlot(new Set([...drones.values()].map((d) => d.slot)), LIMITS.droneSlots, "drones");
     spec.slot = slot;
     drones.set(name, spec);
     engine.defineDrone(slot, spec.instr, resolveDroneChannels(spec, now));
@@ -745,33 +869,23 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
     const remember = spec.slot !== undefined;
     const amp = num(spec.amp, "amp", now.beat);
     const rawPan = num(spec.pan, "pan", now.beat);
-    const pan = Math.min(1, Math.max(-1, rawPan));
-    const sends = spec.sends.map((x) => {
-      const rawAmt = num(pick(x.amount, 0), "send amount", now.beat);
-      if (remember) paramMemory.set(`${spec.name}:send${x.slot}`, rawAmt);
-      return [x.slot, Math.min(1, Math.max(0, rawAmt))];
-    });
+    const pan = clamp(rawPan, -1, 1);
+    const sends = resolveSends(spec, now, remember);
     if (remember) {
       paramMemory.set(`${spec.name}:amp`, amp);
-      paramMemory.set(`${spec.name}:pan`, pan);
+      paramMemory.set(`${spec.name}:pan`, rawPan);
     }
     return { amp, pan, sends };
   }
 
   function defineBus(name, call) {
-    if (reverbs.has(name)) throw new Error(`'${name}' is a reverb, pick another name`);
-    if (drones.has(name)) throw new Error(`'${name}' is a drone, pick another name`);
-    if (players.has(name)) throw new Error(`'${name}' is a player, pick another name`);
+    claimName(name, "bus");
+    checkNotReserved(name, "bus");
     const spec = buildBusSpec(name, call);
     const now = requireNow();
     armBusLineto(spec, now);
     const existing = buses.get(name);
-    let slot = existing?.slot;
-    if (slot === undefined) {
-      const used = new Set([...buses.values()].map((b) => b.slot));
-      slot = Array.from({ length: LIMITS.busSlots }, (_, k) => k).find((k) => !used.has(k));
-      if (slot === undefined) throw new Error(`At most ${LIMITS.busSlots} buses at a time`);
-    }
+    const slot = existing?.slot ?? freeSlot(new Set([...buses.values()].map((b) => b.slot)), LIMITS.busSlots, "buses");
     spec.slot = slot;
     buses.set(name, spec);
     engine.defineBus(slot, resolveBusChannels(spec, now));
@@ -854,26 +968,28 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
       return dur;
     }
     const dur = Math.max(num(pick(spec.dur, i), "dur", at), 0.01);
-    const sus = spec.sus ? num(pick(spec.sus, i), "sus", at) : dur;
+    // Floored like dur: Csound reads a zero or negative duration as "hold forever", so a
+    // sus that dips below zero (sus=cosr(0.5, 1, 4)) would leave a stuck note every step.
+    const sus = spec.sus ? Math.max(num(pick(spec.sus, i), "sus", at), 0.01) : dur;
     const amp = num(pick(spec.amp, i), "amp", at);
-    const pan = Math.min(1, Math.max(0, (num(pick(spec.pan, i), "pan", at) + 1) / 2));
+    const pan = clamp((num(pick(spec.pan, i), "pan", at) + 1) / 2, 0, 1);
 
-    const sends = spec.sends.map((x) => [x.slot, Math.min(1, Math.max(0, num(pick(x.amount, i), "send amount", at)))]);
+    const sends = spec.sends.map((x) => [x.slot, clamp(num(pick(x.amount, i), "send amount", at), 0, 1)]);
     // A synth's own parameters, clamped to their range; "beats" values are handed over in seconds.
     const extras = spec.extras.map(({ key, p, values }) => {
-      const v = Math.min(p.max, Math.max(p.min, num(pick(values, i), key, at)));
+      const v = clamp(num(pick(values, i), key, at), p.min, p.max);
       return p.unit === "beats" ? (v * 60) / bpm : v;
     });
 
     const emitNote = (item, t, s, gain) => {
       if (spec.drums) {
         const instr = DRUMS[item]?.instr;
-        if (instr && !dry) engine.note(t, instr, s, gain, 0, pan, sends, extras, spec.bus);
+        if (instr && !dry && spec.bus !== DEAD_BUS) engine.note(t, instr, s, gain, 0, pan, sends, extras, spec.bus);
       } else {
-        const oct = Math.min(PLAYER_PARAMS.oct.max, Math.max(PLAYER_PARAMS.oct.min, num(pick(spec.oct, i), "oct", t)));
+        const oct = clamp(num(pick(spec.oct, i), "oct", t), PLAYER_PARAMS.oct.min, PLAYER_PARAMS.oct.max);
         const root = spec.root ? num(pick(spec.root, i), "root", t) : defaults.root;
         const midi = degreeToMidi(num(item, "degree", t), scaleOf(spec.scale ?? defaults.scale), root, oct);
-        if (!dry) engine.note(t, spec.instr, s, gain, midiToFreq(midi), pan, sends, extras, spec.bus);
+        if (!dry && spec.bus !== DEAD_BUS) engine.note(t, spec.instr, s, gain, midiToFreq(midi), pan, sends, extras, spec.bus);
       }
     };
 
@@ -990,21 +1106,15 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   }
 
   function defineReverb(name, call) {
-    if (players.has(name)) throw new Error(`'${name}' is a player, pick another name for the reverb`);
-    if (drones.has(name)) throw new Error(`'${name}' is a drone, pick another name for the reverb`);
-    if (buses.has(name)) throw new Error(`'${name}' is a bus, pick another name for the reverb`);
+    claimName(name, "reverb");
+    checkNotReserved(name, "reverb");
     for (const key of Object.keys(call.kwargs)) {
       if (!(key in REVERB_DEFAULTS)) throw new Error(`Unknown reverb parameter '${key}'. Available: ${Object.keys(REVERB_DEFAULTS).join(", ")}`);
     }
     if (call.args.length) throw new Error("reverb() takes named parameters only, e.g. reverb(decay=0.9)");
     const existed = reverbs.has(name);
-    let slot = reverbs.get(name);
-    if (slot === undefined) {
-      const used = new Set(reverbs.values());
-      slot = Array.from({ length: LIMITS.reverbSlots }, (_, k) => k).find((k) => !used.has(k));
-      if (slot === undefined) throw new Error(`At most ${LIMITS.reverbSlots} reverbs at a time`);
-      reverbs.set(name, slot);
-    }
+    const slot = reverbs.get(name) ?? freeSlot(new Set(reverbs.values()), LIMITS.reverbSlots, "reverbs");
+    reverbs.set(name, slot);
     const params = {};
     for (const [key, dflt] of Object.entries(REVERB_DEFAULTS)) params[key] = num(call.kwargs[key] ?? dflt, key);
     engine.defineReverb(slot, params);
@@ -1014,20 +1124,24 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   // Stops one player (at the next bar), or removes one reverb, drone or bus
   // (immediately: none of those were ever on the bar grid).
   function killOne(name) {
+    const detached = (names) => (names.length ? ` (${names.join(", ")} no longer send${names.length > 1 ? "" : "s"} to it)` : "");
     if (reverbs.has(name)) {
-      engine.stopReverb(reverbs.get(name));
+      const slot = reverbs.get(name);
+      engine.stopReverb(slot);
       reverbs.delete(name);
-      say(`${name} killed: reverb removed`, "kill");
+      say(`${name} killed: reverb removed${detached(detachReverb(slot))}`, "kill");
     } else if (drones.has(name)) {
       engine.stopDrone(drones.get(name).slot);
       drones.delete(name);
-      for (const k of paramMemory.keys()) if (k.startsWith(`${name}:`)) paramMemory.delete(k);
+      forget(name);
       say(`${name} killed: drone stopped`, "kill");
     } else if (buses.has(name)) {
-      engine.stopBus(buses.get(name).slot);
+      const { slot } = buses.get(name);
+      engine.stopBus(slot);
       buses.delete(name);
-      for (const k of paramMemory.keys()) if (k.startsWith(`${name}:`)) paramMemory.delete(k);
-      say(`${name} killed: bus stopped`, "kill");
+      forget(name);
+      const silenced = detachBus(slot);
+      say(`${name} killed: bus stopped${silenced.length ? ` (${silenced.join(", ")} now silent until re-evaluated)` : ""}`, "kill");
     } else if (players.has(name)) {
       const now = requireNow();
       const at = nextTarget(now);
@@ -1047,13 +1161,25 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
       return buses.get(name)?.slot;
     },
 
+    reverbNames() {
+      return reverbs.keys();
+    },
+
     define(name, call) {
+      // Only a player's notes have bus-routed variants; say so instead of quietly
+      // playing a drone, bus, reverb or log somewhere other than where it was sent.
+      if (call.bus !== null) {
+        const what =
+          call.name === "reverb" ? "A reverb" :
+          call.name === "bus" ? "A bus" :
+          call.name === "log" ? "log()" :
+          call.kwargs.dur === undefined ? "A drone" : null;
+        if (what) throw new Error(`${what} cannot be routed to a bus with @; only players (a synth or play() with dur=) can.`);
+      }
       if (call.name === "reverb") return defineReverb(name, call);
       if (call.name === "bus") return defineBus(name, call);
       if (call.name !== "log" && call.kwargs.dur === undefined) return defineDrone(name, call);
-      if (reverbs.has(name)) throw new Error(`'${name}' is a reverb, pick another name for the player`);
-      if (drones.has(name)) throw new Error(`'${name}' is a drone, pick another name (or drop dur= to redefine it as one)`);
-      if (buses.has(name)) throw new Error(`'${name}' is a bus, pick another name for the player`);
+      claimName(name, "player", { drone: " (or drop dur= to redefine it as one)" });
       const spec = buildSpec(call);
       spec.label = name;
       const now = requireNow();
@@ -1105,9 +1231,7 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
     },
 
     clear() {
-      players.clear();
-      cancelTimers();
-      engine.silence();
+      silenceAll();
       say("clear: all players stopped, instruments silenced", "kill");
     },
   };
@@ -1129,11 +1253,11 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
       buses.clear();
       paramMemory.clear();
       cancelTimers();
+      // A new session starts from the same defaults as the clock (tempo/bar) does.
+      Object.assign(defaults, INITIAL_DEFAULTS);
     },
 
-    clear() {
-      players.clear();
-      cancelTimers();
-    },
+    // Ctrl+.: stops every player and silences every running instrument.
+    clear: silenceAll,
   };
 }
