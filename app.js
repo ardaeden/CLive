@@ -22,7 +22,7 @@ const SAMPLE = `; ============================================================
 ; and press Ctrl+Enter, or evaluate one block at a time from top
 ; to bottom (blank lines separate blocks).
 ; Ctrl+Enter: block/selection   Alt+Enter: line   Ctrl+.: silence
-; Players and score lines always start on the next bar line.
+; Players, scale/root changes and score lines start on the next bar line.
 ; ============================================================
 
 ; 1. Clock and defaults

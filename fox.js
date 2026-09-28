@@ -678,6 +678,13 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   const paramMemory = new Map();
   const INITIAL_DEFAULTS = { scale: "major", root: 0, updateUnit: "bar" };
   const defaults = { ...INITIAL_DEFAULTS };
+  // scale/root changes that wait for their target, like a redefined player does:
+  // key -> { at, value }. A newer change of the same key replaces a queued one.
+  const queued = new Map();
+  // The latest beat a pitched note has already been handed to Csound for. Notes go out
+  // ahead of time, so a scale/root change must land after this to reach every note on
+  // its side of the target.
+  let sentUntil = -Infinity;
   let timer = null;
 
   // Every name belongs to exactly one kind of thing. Throws if `name` is already taken by
@@ -742,6 +749,13 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   // Drops everything paramMemory remembers about a killed drone or bus.
   function forget(name) {
     for (const k of paramMemory.keys()) if (k.startsWith(`${name}:`)) paramMemory.delete(k);
+  }
+
+  // The default scale or root in effect at `beat`: a queued change counts from its
+  // target on. Each note asks about its own beat, since it is sent ahead of time.
+  function defaultAt(key, beat) {
+    const q = queued.get(key);
+    return q && q.at <= beat + EPS ? q.value : defaults[key];
   }
 
   // Stops every player and silences whatever is still sounding.
@@ -836,8 +850,8 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   function resolveDroneChannels(spec, now) {
     const remember = spec.slot !== undefined;
     const oct = clamp(num(spec.oct, "oct", now.beat), PLAYER_PARAMS.oct.min, PLAYER_PARAMS.oct.max);
-    const root = spec.root !== undefined ? num(spec.root, "root", now.beat) : defaults.root;
-    const scale = scaleOf(spec.scale ?? defaults.scale);
+    const root = spec.root !== undefined ? num(spec.root, "root", now.beat) : defaultAt("root", now.beat);
+    const scale = scaleOf(spec.scale ?? defaultAt("scale", now.beat));
     const degree = num(spec.degree, "degree", now.beat);
     const midi = degreeToMidi(degree, scale, root, oct);
     const freq = midiToFreq(midi);
@@ -1019,9 +1033,12 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
         if (instr && !dry && spec.bus !== DEAD_BUS) engine.note(t, instr, s, gain, 0, pan, sends, extras, spec.bus);
       } else {
         const oct = clamp(num(pick(spec.oct, i), "oct", t), PLAYER_PARAMS.oct.min, PLAYER_PARAMS.oct.max);
-        const root = spec.root ? num(pick(spec.root, i), "root", t) : defaults.root;
-        const midi = degreeToMidi(num(item, "degree", t), scaleOf(spec.scale ?? defaults.scale), root, oct);
-        if (!dry && spec.bus !== DEAD_BUS) engine.note(t, spec.instr, s, gain, midiToFreq(midi), pan, sends, extras, spec.bus);
+        const root = spec.root ? num(pick(spec.root, i), "root", t) : defaultAt("root", t);
+        const midi = degreeToMidi(num(item, "degree", t), scaleOf(spec.scale ?? defaultAt("scale", t)), root, oct);
+        if (!dry && spec.bus !== DEAD_BUS) {
+          engine.note(t, spec.instr, s, gain, midiToFreq(midi), pan, sends, extras, spec.bus);
+          sentUntil = Math.max(sentUntil, t);
+        }
       }
     };
 
@@ -1047,6 +1064,11 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   function tick() {
     const now = engine.now();
     if (!now) return;
+    for (const [key, q] of queued) {
+      if (q.at > now.beat + EPS) continue;
+      defaults[key] = q.value;
+      queued.delete(key);
+    }
     const horizon = now.beat + (LOOKAHEAD_S * now.bpm) / 60;
     for (const [name, p] of players) {
       try {
@@ -1118,9 +1140,10 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   // "updates beat") the next whole beat instead -- a faster response at the cost of no
   // longer always landing on a musically-aligned bar. Either way the same lead time
   // applies, so there is always enough real time left for the launcher to schedule it.
-  function nextTarget(now) {
+  // `after`: a beat the target must come strictly after, when that is later still.
+  function nextTarget(now, after = -Infinity) {
     const unit = defaults.updateUnit === "beat" ? 1 : now.bar;
-    const b = now.beat + (NEXT_BAR_LEAD_S * now.bpm) / 60;
+    const b = Math.max(now.beat + (NEXT_BAR_LEAD_S * now.bpm) / 60, after);
     return (Math.floor(b / unit) + 1) * unit;
   }
 
@@ -1237,13 +1260,14 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
         engine.setBar(v);
         onBar?.(v);
         say(`bar ${v}`);
-      } else if (word === "scale") {
-        scaleOf(value);
-        defaults.scale = value;
-        say(`scale ${Array.isArray(value) ? `[${value.join(", ")}]` : value}`);
-      } else if (word === "root") {
-        defaults.root = num(value, "root");
-        say(`root ${defaults.root}`);
+      } else if (word === "scale" || word === "root") {
+        // Lands on the same target a redefined player would, so a pattern never
+        // switches scale halfway through a bar.
+        const v = word === "scale" ? (scaleOf(value), value) : num(value, "root");
+        const now = requireNow();
+        const at = nextTarget(now, sentUntil);
+        queued.set(word, { at, value: v });
+        say(`${word} ${Array.isArray(v) ? `[${v.join(", ")}]` : v} from ${describeTarget(at, now)}`);
       } else if (word === "updates") {
         if (value !== "bar" && value !== "beat") throw new Error('updates must be "bar" or "beat"');
         defaults.updateUnit = value;
@@ -1296,6 +1320,8 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
       cancelTimers();
       // A new session starts from the same defaults as the clock (tempo/bar) does.
       Object.assign(defaults, INITIAL_DEFAULTS);
+      queued.clear();
+      sentUntil = -Infinity;
     },
 
     // Ctrl+.: stops every player and silences every running instrument.

@@ -33,7 +33,7 @@ export const LIMIT_DOCS = {
   maxSends: "Reverb sends per player, drone or bus.",
   defaultSend: "Send amount used when you write send=rev1 without an amount.",
   lookaheadSeconds: "How far ahead (in seconds) notes are handed to Csound. Notes always start exactly on the beat grid.",
-  nextBarLeadSeconds: "A change evaluated within this many seconds of its target (a bar line, or a beat line with updates \"beat\") waits for the following one instead.",
+  nextBarLeadSeconds: "A change evaluated within this many seconds of its target (a bar line, or a beat line with updates \"beat\") waits for the following one instead. For scale and root the window is lookaheadSeconds, since notes already handed to Csound keep the scale they were sent with.",
   outputLatencySeconds: "Audio output buffer (in seconds) requested from the browser. Csound renders inside the audio thread, so a bigger buffer rides out brief load peaks (startup, compiling Csound code, many notes starting at once) instead of dropping out. It only delays the sound as a whole; notes stay exactly on the beat grid.",
   minBpm: "Lowest tempo accepted by the tempo command and the BPM box.",
   maxBpm: "Highest tempo accepted by the tempo command and the BPM box.",
@@ -232,11 +232,11 @@ export const COMMANDS = [
   { syntax: "tempo 120", doc: "Set the tempo (beats per minute). Everything stays locked because all timing is in beats." },
   { syntax: "bar 4", doc: "Set the number of beats per bar." },
   { syntax: "clear", doc: "Stop every player and silence all instruments, including notes routed to a bus. Reverbs, drones and buses themselves keep running; kill them by name." },
-  { syntax: 'scale "minor"', doc: "Default scale for players that do not set scale=. Also takes a custom list: scale [0, 3, 5, 7, 10]." },
-  { syntax: "root 2", doc: "Default root (semitones above C) for players that do not set root=." },
+  { syntax: 'scale "minor"', doc: "Default scale for players and drones that do not set scale=. Also takes a custom list: scale [0, 3, 5, 7, 10]. Like a redefined player, the change lands on the next bar line (or beat, with updates \"beat\"), so every player switches together and none changes scale halfway through a bar; the console says where. Notes are handed to Csound up to lookaheadSeconds ahead and cannot be changed after that, so a change evaluated closer than that to the bar line (or after a long pattern step has already sent notes past it) waits for the next bar line after them. Evaluating another scale before then replaces the waiting one." },
+  { syntax: "root 2", doc: "Default root (semitones above C) for players and drones that do not set root=. Lands on the next bar line (or beat) exactly like scale." },
   {
     syntax: 'updates "bar" / updates "beat"',
-    doc: 'Switches when a new or changed player (and kill) takes effect. "bar" (the default) always lands on the next bar line, so a pattern restarts from a musically aligned position. "beat" lands on the next whole beat instead -- usually just a beat or two away rather than up to a full bar, though redefining an already-running player can still land one beat later than that if its old pattern had just played a note on the very beat the new one would take over, to avoid a doubled note -- at the cost of that bar alignment. Useful while sketching, less so once several players need to stay in phase with each other. Classic i score lines always stay bar-quantized, regardless of this setting.',
+    doc: 'Switches when a new or changed player (and kill, scale and root) takes effect. "bar" (the default) always lands on the next bar line, so a pattern restarts from a musically aligned position. "beat" lands on the next whole beat instead -- usually just a beat or two away rather than up to a full bar, though redefining an already-running player can still land one beat later than that if its old pattern had just played a note on the very beat the new one would take over, to avoid a doubled note -- at the cost of that bar alignment. Useful while sketching, less so once several players need to stay in phase with each other. Classic i score lines always stay bar-quantized, regardless of this setting.',
   },
 ];
 
@@ -337,9 +337,10 @@ export const GUIDE = {
     title: "Timing",
     paragraphs: [
       "All rhythm is locked to one master clock that runs inside Csound. Durations are in beats, so a tempo change moves everything together.",
-      "Whatever you evaluate starts on the next bar line: new or changed players, and classic `i` score lines. A player that was already running keeps playing until then, and its steps are aligned to the bar.",
+      "Whatever you evaluate starts on the next bar line: new or changed players, `kill`, `scale` and `root` changes, and classic `i` score lines. A player that was already running keeps playing until then, and its steps are aligned to the bar. A scale or root change reaches every player on the same bar line, so nothing switches halfway through a bar.",
+      "`tempo` and `bar` apply at once: all timing is in beats, so a tempo change moves everything together. Reverbs, drones and buses also change at once, since they are not on the grid.",
       "Tip: keep the durations of a pattern adding up to a whole bar (or a divisor of it) so the pattern loops in time with the bar.",
-      "`updates \"beat\"` switches players (and kill) to land on the next beat instead of the next bar line, for a much faster response at the cost of that bar alignment. Score `i` lines are unaffected either way. See the Command reference.",
+      "`updates \"beat\"` switches players (and kill, scale and root) to land on the next beat instead of the next bar line, for a much faster response at the cost of that bar alignment. Score `i` lines are unaffected either way. See the Command reference.",
     ],
   },
   players: {
@@ -354,7 +355,7 @@ export const GUIDE = {
   drones: {
     title: "Drones",
     paragraphs: [
-      "A drone is one continuous voice instead of a repeating pattern: leave out dur and give a single degree (or nothing, for degree 0) instead of a list. It starts as soon as you evaluate it, ignores the bar grid entirely, and keeps running until you kill it. Only synths marked \"drone\" on the Synths page can be used this way; the rest are built around decaying to silence, which does not make sense held forever.",
+      "A drone is one continuous voice instead of a repeating pattern: leave out dur and give a single degree (or nothing, for degree 0) instead of a list. It starts as soon as you evaluate it, ignores the bar grid, and keeps running until you kill it. (A `scale` or `root` command is the exception: a drone that follows the default picks the change up on the same bar line as the players.) Only synths marked \"drone\" on the Synths page can be used this way; the rest are built around decaying to silence, which does not make sense held forever.",
       "amp, pan, send and most of a synth's own parameters keep updating live while a drone runs, both when you re-evaluate the line with new plain numbers and continuously if you use `cosr()`/`random()` there: those are re-read every few milliseconds instead of once, so `g1: gendy(0, spread=cosr(0.4, 0.3, 8))` actually breathes in and out while it plays, not just once per note. Parameters that shape an envelope over time (fmpad's attack and release, for example) are the exception: Csound needs those fixed when the drone starts, so re-evaluating the line alone will not change them, only `kill` and redefining it will.",
       "`lineto()` fades a drone in or out: `g1: gendy(0, amp=lineto(0, 1, 4))` fades in from silence over 4 seconds, and later re-evaluating `g1: gendy(0, amp=lineto(0, 3))` fades it back out over 3 seconds from whatever it is playing at right now, not from the start of the previous ramp. A bus's amp, pan and send amounts can be faded the same way -- see the Buses page. It is not accepted anywhere else (a player, a reverb, tempo/bar/scale/root, or combined with arithmetic).",
       "`kill` stops a drone immediately, not at the next bar line, since it was never on the grid to begin with -- for a smooth stop instead of a hard cut, fade out with `lineto()` first and `kill` once it reaches 0.",
