@@ -392,6 +392,7 @@ export function quantize(line) {
 
 export function createEngine(Csound, { onMessage }) {
   let csound = null;
+  let audioCtx = null;
   let running = false;
   let bpm = 120;
   let bar = 4;
@@ -428,6 +429,14 @@ export function createEngine(Csound, { onMessage }) {
     return aliases.get(name);
   };
 
+  // The engine creates the AudioContext, so it closes it too: Csound's destroy() leaves
+  // it running, and browsers refuse new contexts once a handful are open.
+  async function closeAudio() {
+    const ctx = audioCtx;
+    audioCtx = null;
+    if (ctx && ctx.state !== "closed") await ctx.close().catch(() => {});
+  }
+
   async function poll() {
     if (polling || !running) return;
     polling = true;
@@ -449,8 +458,14 @@ export function createEngine(Csound, { onMessage }) {
     },
 
     async start() {
-      csound = await Csound();
-      if (!csound) throw new Error("Csound failed to start (WebAudio/WASM not supported).");
+      // Csound's own default is the browser's smallest buffer ("interactive"), which
+      // drops out whenever one render quantum runs long.
+      audioCtx = new AudioContext({ latencyHint: LIMITS.outputLatencySeconds });
+      csound = await Csound({ audioContext: audioCtx });
+      if (!csound) {
+        await closeAudio();
+        throw new Error("Csound failed to start (WebAudio/WASM not supported).");
+      }
       try {
         csound.on("message", onMessage);
         await csound.setOption("-odac");
@@ -492,6 +507,7 @@ export function createEngine(Csound, { onMessage }) {
         } catch {
           // Nothing more to release.
         }
+        await closeAudio();
         throw e;
       }
     },
@@ -648,6 +664,7 @@ export function createEngine(Csound, { onMessage }) {
       } finally {
         csound = null;
         clock = null;
+        await closeAudio();
       }
     },
   };
