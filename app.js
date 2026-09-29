@@ -16,7 +16,6 @@ const barInput = $("bar");
 const posEl = $("pos");
 let beatTimer = null;
 
-const SAMPLE_VERSION = 18;
 const SAMPLE = `; ============================================================
 ; CLive feature tour. Press Start, then either select everything
 ; and press Ctrl+Enter, or evaluate one block at a time from top
@@ -40,59 +39,14 @@ rev2: reverb(decay=0.6, lowcut=120, highcut=9000, level=0.3)
 p1: pluck@bus1(0, dur=1, send=rev1(0.2))
 `;
 
-const STORE_KEY = "clive.tabs";
-// Tab persistence is switched off for now: every launch starts from the default tab.
-const PERSIST = false;
 const highlightEl = $("highlight");
 const flashEl = $("flash");
 const tabsEl = $("tabs");
 const renderHighlight = () => (highlightEl.innerHTML = highlight(editor.value));
 
-const isTab = (t) => t && typeof t.name === "string" && typeof t.code === "string";
+// Every launch starts from the example in one "main" tab; Load/Save keeps scenes in files.
+const state = { tabs: [{ name: "main", code: SAMPLE }], active: 0 };
 
-function loadState() {
-  if (!PERSIST) return { tabs: [{ name: "main", code: SAMPLE }], active: 0, sampleVersion: SAMPLE_VERSION, shippedSample: SAMPLE };
-  try {
-    const raw = JSON.parse(localStorage.getItem(STORE_KEY));
-    if (raw && Array.isArray(raw.tabs)) raw.tabs = raw.tabs.filter(isTab);
-    if (raw && raw.tabs?.length) {
-      raw.active = Math.min(Math.max(0, raw.active | 0), raw.tabs.length - 1);
-      if (raw.sampleVersion !== SAMPLE_VERSION) {
-        // Only touch "main" if it's still exactly what was last shipped -- update it in
-        // place so an untouched tab keeps showing the current tour. If it has been
-        // edited, leave it alone entirely: no rename, no forked "main (old)" tab, no
-        // new tab inserted. The user's own edits are just theirs from then on.
-        const main = raw.tabs.find((t) => t.name === "main");
-        if (main && main.code === raw.shippedSample) {
-          main.code = SAMPLE;
-          raw.active = raw.tabs.indexOf(main);
-        }
-        raw.shippedSample = SAMPLE;
-        raw.sampleVersion = SAMPLE_VERSION;
-      }
-      return raw;
-    }
-    const legacy = localStorage.getItem("clive.code");
-    if (legacy !== null) {
-      const code = legacy.replace(/^(\s*[A-Za-z_]\w*)\s*>>/gm, "$1:");
-      return { tabs: [{ name: "main", code }], active: 0, sampleVersion: SAMPLE_VERSION, shippedSample: SAMPLE };
-    }
-  } catch {
-    // Storage unavailable or corrupt: start from the example.
-  }
-  return { tabs: [{ name: "main", code: SAMPLE }], active: 0, sampleVersion: SAMPLE_VERSION, shippedSample: SAMPLE };
-}
-
-const state = loadState();
-const saveState = () => {
-  if (!PERSIST) return;
-  try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(state));
-  } catch {
-    // Storage full or blocked: the session still works, it just will not persist.
-  }
-};
-saveState();
 const activeTab = () => state.tabs[state.active];
 
 function showTab() {
@@ -111,7 +65,6 @@ function selectTab(i) {
   if (i === state.active) return;
   Object.assign(activeTab(), { cursor: editor.selectionStart, scroll: editor.scrollTop });
   state.active = i;
-  saveState();
   showTab();
   editor.focus();
 }
@@ -122,7 +75,7 @@ function addTab() {
   while (state.tabs.some((t) => t.name === `untitled ${n}`)) n++;
   state.tabs.push({ name: `untitled ${n}`, code: "" });
   state.active = state.tabs.length - 1;
-  saveState();
+  setDirty(true);
   showTab();
   editor.focus();
 }
@@ -134,7 +87,7 @@ function closeTab(i) {
   if (!state.tabs.length) state.tabs.push({ name: "untitled", code: "" });
   if (i < state.active) state.active--;
   state.active = Math.min(state.active, state.tabs.length - 1);
-  saveState();
+  setDirty(true);
   showTab();
 }
 
@@ -142,7 +95,7 @@ function renameTab(i) {
   const name = prompt("Tab name", state.tabs[i].name)?.trim();
   if (!name) return;
   state.tabs[i].name = name;
-  saveState();
+  setDirty(true);
   renderTabs();
 }
 
@@ -178,7 +131,7 @@ function renderTabs() {
 
 editor.addEventListener("input", () => {
   activeTab().code = editor.value;
-  saveState();
+  setDirty(true);
   renderHighlight();
 });
 
@@ -236,7 +189,7 @@ startBtn.addEventListener("click", async () => {
     await engine.setTempo(readBpm());
     await engine.setBar(readBar());
     fox.start();
-    beatTimer = setInterval(updatePosition, 50);
+    beatTimer = setInterval(updatePosition, 20);
   } catch (e) {
     log(String(e), true);
     setRunning(false);
@@ -248,7 +201,9 @@ stopBtn.addEventListener("click", stop);
 function updatePosition() {
   const now = engine.now();
   if (!now) return;
-  posEl.textContent = `${Math.floor(now.beat / now.bar) + 1}.${Math.floor(now.beat % now.bar) + 1}`;
+  // Shows the beat being heard, which trails Csound's clock by the output buffer.
+  const beat = Math.max(0, now.beat - (engine.outputLatency() * now.bpm) / 60);
+  posEl.textContent = `${Math.floor(beat / now.bar) + 1}.${Math.floor(beat % now.bar) + 1}`;
 }
 
 bpmInput.addEventListener("change", () => engine.setTempo(readBpm()));
@@ -361,14 +316,14 @@ function statementRange(useSelection) {
   return [lines[first].start, lines[last].end];
 }
 
-// Ctrl+Alt+Enter: kill the players, reverbs, drones and buses defined in the range,
+// Ctrl+Alt+Enter: kill the players, reverbs, delays, drones and buses defined in the range,
 // like "kill name".
 function killPlayers() {
   if (!engine.running) return log("Press Start first.", true);
   const range = statementRange(true);
   const code = editor.value.slice(range[0], range[1]);
   const names = [...new Set([...splitCode(code).fox.matchAll(/^\s*([A-Za-z_]\w*)\s*:/gm)].map((m) => m[1]))];
-  if (!names.length) return log("No player, reverb, drone or bus definition here to kill.", true);
+  if (!names.length) return log("No player, reverb, delay, drone or bus definition here to kill.", true);
   flash(range, "kill");
   try {
     fox.run(names.map((n) => `kill ${n}`).join("\n"));
@@ -439,7 +394,146 @@ const shortcutActions = {
   silence: () => fox.clear(),
   indent,
   outdent,
+  saveScene,
+  loadScene,
 };
+
+// ---- scenes: every tab, plus tempo and bar, saved to and loaded from a .clive file ----
+
+const SCENE_TYPES = [{ description: "CLive scene", accept: { "application/json": [".clive"] } }];
+let sceneName = "";
+// Changes since the scene was last saved or loaded (the page title shows a *).
+let sceneDirty = false;
+
+function setDirty(dirty) {
+  sceneDirty = dirty;
+  document.title = sceneName ? `${sceneName}${dirty ? " *" : ""} - CLive` : "CLive";
+}
+
+function sceneData() {
+  Object.assign(activeTab(), { cursor: editor.selectionStart, scroll: editor.scrollTop });
+  return {
+    clive: 1,
+    tempo: readBpm(),
+    bar: readBar(),
+    active: state.active,
+    tabs: state.tabs.map(({ name, code, cursor }) => ({ name, code, cursor: cursor ?? 0 })),
+  };
+}
+
+const isTab = (t) => t && typeof t.name === "string" && typeof t.code === "string";
+
+// Checks a file's text and turns it into { tabs, active, tempo, bar }; throws with a
+// readable reason if it is not a scene.
+function parseScene(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new Error("not a CLive scene (it is not JSON)");
+  }
+  if (!raw || raw.clive !== 1 || !Array.isArray(raw.tabs)) throw new Error("not a CLive scene");
+  const tabs = raw.tabs.filter(isTab).map(({ name, code, cursor }) => ({
+    name,
+    code,
+    cursor: Number.isInteger(cursor) ? Math.min(Math.max(cursor, 0), code.length) : 0,
+  }));
+  if (!tabs.length) throw new Error("the scene has no tabs");
+  const active = Number.isInteger(raw.active) ? Math.min(Math.max(raw.active, 0), tabs.length - 1) : 0;
+  const number = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  return { tabs, active, tempo: number(raw.tempo), bar: number(raw.bar) };
+}
+
+async function saveScene() {
+  const text = JSON.stringify(sceneData(), null, 2);
+  try {
+    if (window.showSaveFilePicker) {
+      const handle = await window.showSaveFilePicker({ suggestedName: `${sceneName || "scene"}.clive`, types: SCENE_TYPES });
+      const file = await handle.createWritable();
+      await file.write(text);
+      await file.close();
+      sceneName = handle.name.replace(/\.clive$/i, "");
+    } else {
+      // No file picker in this browser: download the file instead.
+      const name = prompt("Scene name", sceneName || "scene")?.trim();
+      if (!name) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+      a.download = `${name}.clive`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      sceneName = name;
+    }
+    setDirty(false);
+    note(`scene saved: ${sceneName}`);
+  } catch (e) {
+    if (e.name !== "AbortError") log(`Could not save the scene: ${e.message}`, true);
+  }
+}
+
+// The chosen file, or null if the choice was cancelled.
+async function pickSceneFile() {
+  if (window.showOpenFilePicker) {
+    try {
+      const [handle] = await window.showOpenFilePicker({ types: SCENE_TYPES });
+      return await handle.getFile();
+    } catch (e) {
+      if (e.name === "AbortError") return null;
+      throw e;
+    }
+  }
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".clive,.json";
+    input.addEventListener("change", () => resolve(input.files[0] ?? null));
+    input.click();
+  });
+}
+
+async function loadScene() {
+  let file;
+  let scene;
+  try {
+    file = await pickSceneFile();
+    if (!file) return;
+    scene = parseScene(await file.text());
+  } catch (e) {
+    return log(`Could not load ${file ? file.name : "the scene"}: ${e.message}`, true);
+  }
+  if (sceneDirty && !confirm("Replace the current tabs with this scene? Their unsaved changes will be lost.")) return;
+  state.tabs = scene.tabs;
+  state.active = scene.active;
+  showTab();
+  if (scene.tempo !== null) {
+    bpmInput.value = scene.tempo;
+    engine.setTempo(readBpm());
+  }
+  if (scene.bar !== null) {
+    barInput.value = scene.bar;
+    engine.setBar(readBar());
+  }
+  sceneName = file.name.replace(/\.(clive|json)$/i, "");
+  setDirty(false);
+  note(`scene loaded: ${sceneName}, ${scene.tabs.length} tab${scene.tabs.length > 1 ? "s" : ""} -- evaluate the code to hear it`);
+  editor.focus();
+}
+
+$("save").addEventListener("click", saveScene);
+$("load").addEventListener("click", loadScene);
+// Save and load work with the focus anywhere, not only in the editor (which has its own
+// handler for every shortcut), so Ctrl+S never opens the browser's own "Save page".
+document.addEventListener("keydown", (ev) => {
+  if (ev.target === editor) return;
+  const shortcut = SHORTCUTS.find((s) => s.global && matchKeys(ev, s.keys));
+  if (shortcut) {
+    ev.preventDefault();
+    shortcutActions[shortcut.id]();
+  }
+});
+window.addEventListener("beforeunload", (ev) => {
+  if (sceneDirty) ev.preventDefault();
+});
 
 // Bracket and quote pairing: an opener also types its closer and leaves the cursor
 // between them (or wraps the selection). Typing a closer that is already next to the

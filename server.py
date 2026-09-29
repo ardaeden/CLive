@@ -27,8 +27,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".wasm": "application/wasm",
     }
 
-    # Hidden files and folders (.git, .claude, ...) are not part of the app; don't serve them.
+    raw = False
+
     def send_head(self):
+        # Sample files are fetched as /sample?f=<name> rather than by their own path, and
+        # sent as plain bytes: download managers (IDM, for one) hijack any request whose
+        # URL ends in .wav, .mp3 and the like, and the page gets an empty reply instead.
+        url = urllib.parse.urlsplit(self.path)
+        self.raw = url.path == "/sample"
+        if self.raw:
+            name = urllib.parse.parse_qs(url.query).get("f", [""])[0].replace("\\", "/")
+            if not name or any(part in ("", "..") for part in name.split("/")):
+                self.send_error(404)
+                return None
+            self.path = "/samples/" + urllib.parse.quote(name)
+        # Hidden files and folders (.git, .claude, ...) are not part of the app; don't serve them.
         # Decoded first, the same way translate_path does, so %2e can't sneak a dot past.
         path = urllib.parse.unquote(self.path.split("?", 1)[0].split("#", 1)[0])
         if any(part.startswith(".") for part in path.replace("\\", "/").split("/")):
@@ -36,7 +49,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return None
         return super().send_head()
 
+    def guess_type(self, path):
+        return "application/octet-stream" if self.raw else super().guess_type(path)
+
     def end_headers(self):
+        # Tells the app it is talking to this server, so a 404 from /sample means the file
+        # is missing rather than that the endpoint does not exist (see engine.js).
+        self.send_header("X-CLive", "1")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         self.send_header("Cache-Control", "no-store")

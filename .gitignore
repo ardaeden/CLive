@@ -1,9 +1,9 @@
 # Claude Code local session/project state -- not part of the app.
 .claude/
 
-# Temporary test pages used during development (see project memory: always
-# deleted after use, but ignore them too in case one is ever left behind).
-_test*.html
+# Temporary test pages used during development (always deleted after use, but ignore
+# them too in case one is ever left behind). Every such page starts with "_".
+/_*.html
 
 # OS/editor cruft.
 .DS_Store
@@ -12,3 +12,8 @@ Thumbs.db
 
 # Personal notes, kept locally only.
 TODO.txt
+
+# Sound files for cloud's src= are personal and often under a license that does not
+# allow sharing them; only the folder's README is part of the repo.
+samples/*
+!samples/README.md

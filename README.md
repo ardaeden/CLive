@@ -7,8 +7,10 @@ no server-side audio processing.
 
 On top of plain Csound orchestra/score code, CLive adds a small player language for
 live coding: named, re-evaluable voices (`p1: pluck([0, 2, 4], dur=1/2)`), drones,
-mixing buses, reverb sends, and beat-locked scheduling so redefining something never
-breaks the groove.
+drum patterns (a classic kit and an 808-style one), a granular synth that can also
+granulate your own sound files, mixing buses, reverb and delay sends, and beat-locked
+scheduling so redefining something never breaks the groove. Scenes (all tabs, tempo
+and bar) are saved to and loaded from `.clive` files.
 
 ## Running it
 
@@ -36,10 +38,13 @@ from, so the docs can never go stale.
 - `registry.js` -- every synth, drum voice, scale, player parameter, command,
   function and help-page paragraph, in one place.
 - `synths/` -- one file per built-in synth (its Csound DSP, parameters and docs).
+- `drums/` -- one file per drum kit for `play()`.
+- `samples/` -- your own sound files for the `cloud` synth's `src=`; they stay out of
+  the repository (see `.gitignore`).
 - `engine.js` -- the master clock, Csound orchestra generation, and the
   bar-quantized launcher that schedules notes ahead of time.
 - `fox.js` -- the player language: tokenizer, parser and beat-locked scheduler.
-- `app.js` -- the editor UI (tabs, syntax highlighting, shortcuts, oscilloscope).
+- `app.js` -- the editor UI (tabs, scenes, syntax highlighting, shortcuts, oscilloscope).
 - `docs/` -- the help pages; each is a thin HTML shell rendered by `docs/help.js`
   from `registry.js`.
 - `highlight.js` -- shared syntax highlighter for the editor and the help pages.

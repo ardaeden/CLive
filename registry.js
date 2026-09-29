@@ -8,10 +8,11 @@
 // Built-in synths live one-per-file under synths/ (collected and re-exported below) so
 // each is easy to find and edit on its own; everything else stays in this file.
 import { SYNTHS } from "./synths/index.js";
+import { DRUM_KITS } from "./drums/index.js";
 export { SYNTHS };
 
 export const LIMITS = {
-  reverbSlots: 8,
+  sendSlots: 8,
   maxSends: 3,
   defaultSend: 0.3,
   lookaheadSeconds: 0.5,
@@ -26,24 +27,26 @@ export const LIMITS = {
   minFreq: 16,
   maxFreq: 16000,
   busSlots: 8,
+  maxSampleSeconds: 60,
 };
 
 export const LIMIT_DOCS = {
-  reverbSlots: "Reverbs that can exist at the same time.",
-  maxSends: "Reverb sends per player, drone or bus.",
+  sendSlots: "Send effects -- reverbs and delays together -- that can exist at the same time.",
+  maxSends: "Sends (to reverbs or delays) per player, drone, bus or delay.",
   defaultSend: "Send amount used when you write send=rev1 without an amount.",
   lookaheadSeconds: "How far ahead (in seconds) notes are handed to Csound. Notes always start exactly on the beat grid.",
   nextBarLeadSeconds: "A change evaluated within this many seconds of its target (a bar line, or a beat line with updates \"beat\") waits for the following one instead. For scale and root the window is lookaheadSeconds, since notes already handed to Csound keep the scale they were sent with.",
-  outputLatencySeconds: "Audio output buffer (in seconds) requested from the browser. Csound renders inside the audio thread, so a bigger buffer rides out brief load peaks (startup, compiling Csound code, many notes starting at once) instead of dropping out. It only delays the sound as a whole; notes stay exactly on the beat grid.",
+  outputLatencySeconds: "Audio output buffer (in seconds) requested from the browser. Csound renders inside the audio thread, so a bigger buffer rides out brief load peaks (startup, compiling Csound code, many notes starting at once) instead of dropping out. It only delays the sound as a whole; notes stay exactly on the beat grid, and the bar.beat display and log() lines wait for the same delay so they stay in step with what you hear.",
   minBpm: "Lowest tempo accepted by the tempo command and the BPM box.",
   maxBpm: "Highest tempo accepted by the tempo command and the BPM box.",
   maxBar: "Largest number of beats per bar.",
   maxListLength: "Longest list that range() can build.",
   droneSlots: "Drones that can run at the same time.",
-  droneUpdateMs: "How often (in milliseconds) a drone's cosr()/random() parameters are refreshed while it runs.",
+  droneUpdateMs: "How often (in milliseconds) a drone's or bus's cosr()/random()/lineto() parameters are refreshed while it runs. Each value glides linearly to the next over this time, and levels and pan are applied per sample, so moving parameters do not click.",
   minFreq: "Lowest frequency (Hz) a note or drone can reach, whatever combination of oct/degree/root/scale produced it.",
   maxFreq: "Highest frequency (Hz) a note or drone can reach, whatever combination of oct/degree/root/scale produced it.",
   busSlots: "Buses that can exist at the same time.",
+  maxSampleSeconds: "Longest part of a sample file (src=) that is loaded, in seconds; the rest is cut off. Samples are kept in memory as mono, uncompressed audio, so a long file takes a lot of it.",
 };
 
 // Reserved words at the start of a player-language statement. They are only
@@ -51,92 +54,52 @@ export const LIMIT_DOCS = {
 // parser checks for ": " before treating a word as a command.
 export const COMMAND_WORDS = ["tempo", "bar", "scale", "root", "updates", "kill", "clear"];
 
-// Drum voices used by play("..."). The key is the character in the string.
-export const DRUMS = {
-  x: {
-    name: "kick",
-    instr: 201,
-    doc: "Sine sweep from 150 Hz down to 40 Hz.",
-    body: `
-  p3 = 0.6
-  kfreq expseg 150, 0.05, 55, 0.5, 40
-  aenv expseg 1, 0.5, 0.001
-  asig oscili p4 * aenv, kfreq
-  aL, aR pan2 asig * 1.5, p6
-  outs aL, aR
-  revsend aL, aR, p7, p8, p9, p10, p11, p12
-  `,
+// Drum kits for play("..."): kit name -> { character in the pattern -> voice }. The
+// voices live one kit per file under drums/.
+export { DRUM_KITS };
+
+// play()'s own parameters. kit picks the set of voices; decay, tune and tone reach every
+// voice as p13-p15 (in this order), so they work with any kit.
+export const DRUM_PARAMS = {
+  kit: {
+    default: "classic",
+    kind: "kit",
+    shown: '"classic"',
+    doc: 'Which set of drum sounds the pattern plays: "classic" or "808". Each kit has its own characters, listed on the Drums page. It is fixed for the player (not a list).',
   },
-  o: {
-    name: "snare",
-    instr: 202,
-    doc: "High-passed noise plus a short 185 Hz body.",
-    body: `
-  p3 = 0.35
-  aenv expseg 1, 0.25, 0.001
-  abenv expseg 1, 0.1, 0.001
-  anz noise 1, 0
-  anz butterhp anz, 1200
-  abody oscili 1, 185
-  asig = (anz * 0.7 * aenv + abody * 0.5 * abenv) * p4
-  aL, aR pan2 asig, p6
-  outs aL, aR
-  revsend aL, aR, p7, p8, p9, p10, p11, p12
-  `,
+  decay: {
+    default: 1,
+    min: 0.1,
+    max: 4,
+    doc: "Multiplies how long every drum rings: 0.5 is twice as short, 2 twice as long. Like any parameter it can be a list or cosr(), so decay=[1, 0.4] alternates long and short hits.",
   },
-  "-": {
-    name: "closed hat",
-    instr: 203,
-    doc: "Short high-passed noise burst.",
-    body: `
-  p3 = 0.1
-  aenv expseg 1, 0.06, 0.001
-  anz noise 1, 0
-  anz butterhp anz, 7000
-  aL, aR pan2 anz * aenv * p4 * 1.8, p6
-  outs aL, aR
-  revsend aL, aR, p7, p8, p9, p10, p11, p12
-  `,
+  tune: {
+    default: 0,
+    min: -24,
+    max: 24,
+    doc: "Pitch of the drums in semitones, up or down.",
   },
-  "=": {
-    name: "open hat",
-    instr: 204,
-    doc: "Longer high-passed noise burst.",
-    body: `
-  p3 = 0.5
-  aenv expseg 1, 0.4, 0.001
-  anz noise 1, 0
-  anz butterhp anz, 6500
-  aL, aR pan2 anz * aenv * p4 * 1.5, p6
-  outs aL, aR
-  revsend aL, aR, p7, p8, p9, p10, p11, p12
-  `,
-  },
-  "*": {
-    name: "clap",
-    instr: 205,
-    doc: "Band-passed noise burst.",
-    body: `
-  p3 = 0.3
-  aenv expseg 1, 0.25, 0.001
-  anz noise 1, 0
-  anz butterbp anz, 1200, 600
-  ; a narrow bandpass on white noise throws away most of its energy, so this needs
-  ; a much bigger makeup gain than the other drums to sit at a comparable level.
-  aL, aR pan2 anz * aenv * p4 * 4.5, p6
-  outs aL, aR
-  revsend aL, aR, p7, p8, p9, p10, p11, p12
-  `,
+  tone: {
+    default: 0.5,
+    min: 0,
+    max: 1,
+    doc: "Each drum's own character knob, from 0 to 1: the click of a kick, the snappy noise of a snare, the brightness of a hat. What it does for each sound is listed on the Drums page.",
   },
 };
+
+// The ones sent to every drum voice as p13 and up (all but kit).
+export const DRUM_EXTRA_PARAMS = Object.fromEntries(Object.entries(DRUM_PARAMS).filter(([, p]) => p.kind !== "kit"));
+
+// Every drum voice of every kit, for compiling them and checking instrument numbers.
+export const DRUM_VOICES = Object.values(DRUM_KITS).flatMap((kit) => Object.values(kit));
 
 // Built-in instrument numbers must not collide, and must leave room for what is
 // derived from them: aliases for named instruments start at 300, and a dronable synth's
 // continuous voice runs at its number + 9800, which has to stay below the bus returns
-// (9975). Checked here, where both SYNTHS and DRUMS are known.
+// (9975). Checked here, where both SYNTHS and the drum voices are known.
 {
   const owner = new Map();
-  for (const [name, x] of [...Object.entries(SYNTHS), ...Object.values(DRUMS).map((d) => [d.name, d])]) {
+  for (const [name, x] of [...Object.entries(SYNTHS), ...DRUM_VOICES.map((d) => [d.name, d])]) {
     if (owner.has(x.instr)) throw new Error(`Built-in '${name}' and '${owner.get(x.instr)}' both use instr ${x.instr}`);
     owner.set(x.instr, name);
     if (!(x.instr >= 1 && x.instr < 300)) throw new Error(`Built-in '${name}' uses instr ${x.instr}; built-ins must be 1-299`);
@@ -182,7 +145,7 @@ export const PLAYER_PARAMS = {
   send: {
     default: null,
     shown: "none",
-    doc: "Reverb sends: send=rev1(0.3), send=rev1 (amount 0.3) or send=[rev1(0.2), rev2]. The amount can be a list.",
+    doc: "Sends to reverbs and delays: send=rev1(0.3), send=rev1 (amount 0.3) or send=[rev1(0.2), echo1]. The amount can be a list.",
   },
 };
 
@@ -197,6 +160,19 @@ export const REVERB_PARAMS = {
 // instead of straight to the output, and the bus's own amp/pan control that combined
 // signal. amp/pan can be re-evaluated with plain numbers or with cosr()/lineto(), which
 // are re-read every LIMITS.droneUpdateMs like a drone's parameters.
+// delay()'s parameters. Like a bus's, they update live (plain numbers, cosr(), lineto()).
+export const DELAY_PARAMS = {
+  time: { default: 0.75, min: 0.03125, max: 4, doc: "Time between repeats in beats, so it follows the tempo: 1/2 is an eighth note, 3/4 a dotted eighth, 1/3 a triplet. At most 6 seconds, however slow the tempo. Changing it glides like tape speeding up or slowing down, bending the repeats' pitch for a moment." },
+  spread: { default: 0, min: -2, max: 2, doc: "Extra time for the right side, in beats: spread=1/4 with time=1/2 repeats every 1/2 beat on the left and every 3/4 on the right, for a wide, uneven stereo echo." },
+  feedback: { default: 0.45, min: 0, max: 1, doc: "How much of each repeat comes back again: 0 is a single echo, 0.9 a long trail. A soft saturator in the loop keeps it from blowing up, so values near 1 hold the echoes going and slowly smear them instead." },
+  pingpong: { default: 0, min: 0, max: 1, doc: "At 1 the input enters on the left and every repeat jumps to the other side; in between blends that with plain stereo repeats." },
+  lowcut: { default: 100, min: 20, max: 2000, doc: "High-pass inside the loop, in Hz: every repeat gets a little thinner." },
+  highcut: { default: 5000, min: 500, max: 18000, doc: "Low-pass inside the loop, in Hz: every repeat gets a little darker, like tape." },
+  wobble: { default: 0.15, min: 0, max: 1, doc: "Tape wow and flutter: slow and fast wavering of the time, a slight pitch drift and chorus on the repeats." },
+  drive: { default: 0.2, min: 0, max: 1, doc: "Saturation of the repeats, from a clean digital echo (0) to a dirty, compressed tape echo (1)." },
+  level: { default: 0.6, min: 0, max: 2, doc: "How loud the repeats are in the mix. The delay outputs only the repeats (no dry signal)." },
+};
+
 export const BUS_PARAMS = {
   amp: { default: 1, doc: "Loudness multiplier applied to everything routed to this bus." },
   pan: { default: 0, doc: "Stereo balance of the combined bus signal, -1 (left) to 1 (right). This trims the existing left/right levels rather than re-panning a mono source, since each player routed here already panned its own signal." },
@@ -209,11 +185,13 @@ export const SHORTCUTS = [
     id: "killLine",
     label: "kill player",
     keys: "Ctrl+Alt+Enter",
-    doc: "Kill the player, reverb, drone or bus defined on the current line (the whole statement when it spans several lines). With a selection, kills every one of them defined in it. Players stop at the next bar line (or beat, with updates \"beat\"), like kill name; reverbs, drones and buses stop immediately. The console logs each one in red.",
+    doc: "Kill the player, reverb, delay, drone or bus defined on the current line (the whole statement when it spans several lines). With a selection, kills every one of them defined in it. Players stop at the next bar line (or beat, with updates \"beat\"), like kill name; reverbs, delays, drones and buses stop immediately. The console logs each one in red.",
   },
   { id: "silence", label: "silence", keys: "Ctrl+.", doc: "Stop all players and silence every running instrument, including notes routed to a bus. Reverbs, drones and buses themselves keep running." },
   { id: "indent", label: "indent", keys: "Tab", doc: "Insert two spaces; with a selection, indent every selected line instead of replacing it." },
   { id: "outdent", label: "outdent", keys: "Shift+Tab", doc: "Remove up to two leading spaces from the cursor's line, or from every selected line." },
+  { id: "saveScene", label: "save", keys: "Ctrl+S", global: true, doc: "Save the scene -- every tab (name and code), which one is open, and the BPM and Beats/bar boxes -- as a .clive file. Same as the Save button. Where the browser allows it you pick the file and name; otherwise the file is downloaded. Works with the cursor anywhere on the page." },
+  { id: "loadScene", label: "load", keys: "Ctrl+O", global: true, doc: "Open a .clive scene: its tabs replace the current ones (you are asked first if they have unsaved changes) and its BPM and Beats/bar are set. Nothing starts playing on its own; evaluate the code to hear it. Same as the Load button." },
 ];
 
 // Statements the player language understands.
@@ -225,9 +203,10 @@ export const COMMANDS = [
   },
   { syntax: "name: log(cosr(5, 3, 4), dur=1/2)", doc: "Prints a value to the console on every step instead of playing a sound, so you can watch cosr(), random(), round() and patterns. The value is worked out at the step's own beat, exactly as a parameter would get it. It takes one value and dur, and is stopped like any player." },
   { syntax: "name: reverb(decay=0.9, ...)", doc: "Create or update a reverb return. Changes apply immediately and keep the reverb running." },
-  { syntax: "name: bus(amp=1, pan=0, send=rev1(0.3))", doc: "Create or update a bus: a mixing group. amp, pan and send update immediately, live, the same as a drone's (plain numbers, cosr() or lineto()). send= feeds the whole group to up to three reverbs. See the Buses page." },
+  { syntax: "name: delay(time=3/4, feedback=0.45, ...)", doc: "Create or update a delay: a send effect like a reverb, sent to with send=name(amount). Its time is in beats; every parameter updates live, like a bus's, and it can send its repeats on to reverbs with its own send=. See the Delay page." },
+  { syntax: "name: bus(amp=1, pan=0, send=rev1(0.3))", doc: "Create or update a bus: a mixing group. amp, pan and send update immediately, live, the same as a drone's (plain numbers, cosr() or lineto()). send= feeds the whole group to up to three reverbs or delays. See the Buses page." },
   { syntax: "name: synth@busname(degrees, dur=1, ...)", doc: "A player whose whole output goes to a bus instead of straight to the speakers, so the bus's amp/pan control it (and everything else routed there) together. The bus must already exist. send= still works independently." },
-  { syntax: "kill name", doc: "Stop a player at the next bar line (or beat, with updates \"beat\"), or remove a reverb, drone or bus immediately. Several names can follow, separated by spaces or commas (kill p1 p2), and * matches any part of a name (kill d*). Anything still sending to a killed reverb, or routed to a killed bus, goes silent until you re-evaluate it." },
+  { syntax: "kill name", doc: "Stop a player at the next bar line (or beat, with updates \"beat\"), or remove a reverb, delay, drone or bus immediately. Several names can follow, separated by spaces or commas (kill p1 p2), and * matches any part of a name (kill d*). Anything still sending to a killed reverb or delay, or routed to a killed bus, goes silent until you re-evaluate it." },
   { syntax: "kill d*", doc: "Kill every player, reverb, drone and bus whose name matches. * matches any characters, so kill d* stops d1, d2, d10 ..." },
   { syntax: "tempo 120", doc: "Set the tempo (beats per minute). Everything stays locked because all timing is in beats." },
   { syntax: "bar 4", doc: "Set the number of beats per bar." },
@@ -289,8 +268,8 @@ export const FUNCTIONS = {
   },
   lineto: {
     syntax: "lineto(from, to, seconds) or lineto(to, seconds)",
-    doc: "A linear ramp in real seconds (converted to beats using the tempo when it starts, so it stays accurate as long as the tempo doesn't change mid-ramp); once it reaches the target it just holds there. lineto(from, to, seconds) always starts at from. lineto(to, seconds) starts from wherever the same parameter is playing right now, so re-evaluating amp=lineto(0, 3) fades a running drone or bus out smoothly from whatever it is currently at, and amp=lineto(0, 1, 4) fades one in from silence. Only works on a drone's own parameters (degree, oct, amp, pan, send amounts, a synth's own live parameters) or a bus's (amp, pan, send amounts), used directly -- not on a player, a reverb, tempo/bar/scale/root, and it cannot be combined with arithmetic (+, *, ...).",
-    rate: "Continuously, about every 20ms, drones and buses only -- there is no per-step form, since it only makes sense on something re-read continuously like that.",
+    doc: "A linear ramp in real seconds (converted to beats using the tempo when it starts, so it stays accurate as long as the tempo doesn't change mid-ramp); once it reaches the target it just holds there. lineto(from, to, seconds) always starts at from. lineto(to, seconds) starts from wherever the same parameter is playing right now, so re-evaluating amp=lineto(0, 3) fades a running drone, bus or delay out smoothly from whatever it is currently at, and amp=lineto(0, 1, 4) fades one in from silence. Only works on a drone's own parameters (degree, oct, amp, pan, send amounts, a synth's own live parameters) a bus's (amp, pan, send amounts) or a delay's (all of them, send amounts included), used directly -- not on a player, a reverb, tempo/bar/scale/root, and it cannot be combined with arithmetic (+, *, ...).",
+    rate: "Continuously, about every 20ms, on drones, buses and delays only -- there is no per-step form, since it only makes sense on something re-read continuously like that.",
   },
 };
 
@@ -314,7 +293,7 @@ export const CONTRACT = [
   { field: "p4", doc: "Amplitude." },
   { field: "p5", doc: "Frequency in Hz (0 for drums)." },
   { field: "p6", doc: "Pan from 0 (left) to 1 (right), for pan2." },
-  { field: "p7 - p12", doc: "Reverb sends as (slot, amount) pairs. Pass them to revsend to make an instrument work with send=." },
+  { field: "p7 - p12", doc: "Sends to reverbs and delays, as (slot, amount) pairs. Pass them to revsend to make an instrument work with send=." },
   { field: "p13 and up", doc: `Extra parameters of a built-in synth, in the order listed for it on the Synths page (${synthFields}). Your own instruments do not receive any.` },
 ];
 
@@ -326,6 +305,7 @@ export const GUIDE = {
       "Press Start, then evaluate the example in the main tab with `Ctrl+Enter`. Text is evaluated in blocks separated by blank lines, so you can change one player without touching the rest.",
       "A file can mix three things: player lines (`d1: play(\"x-o-\")`), plain Csound orchestra code (`instr ... endin`) and classic Csound score lines (`i 1 0 1 220`). Instruments defined in one tab can be used from any other tab.",
       "Everything you evaluate is reported in the console on the right, in blue: for example `> d1: play starts at bar 5`. Kills and errors show in red.",
+      "Save keeps the whole scene -- all tabs and the tempo and bar -- in a `.clive` file (`Ctrl+S`), and Load (`Ctrl+O`) brings it back in place of the current tabs. The page title shows the scene's name, with a `*` while it has unsaved changes. Loading does not start anything: evaluate the code when you want to hear it.",
     ],
     example: 'tempo 110\nd1: play("x---o---", dur=1/2)\nb1: bass([0, 0, 3, 5], dur=[1, 1/2, 1/2, 1], oct=3)',
   },
@@ -357,7 +337,7 @@ export const GUIDE = {
     paragraphs: [
       "A drone is one continuous voice instead of a repeating pattern: leave out dur and give a single degree (or nothing, for degree 0) instead of a list. It starts as soon as you evaluate it, ignores the bar grid, and keeps running until you kill it. (A `scale` or `root` command is the exception: a drone that follows the default picks the change up on the same bar line as the players.) Only synths marked \"drone\" on the Synths page can be used this way; the rest are built around decaying to silence, which does not make sense held forever.",
       "amp, pan, send and most of a synth's own parameters keep updating live while a drone runs, both when you re-evaluate the line with new plain numbers and continuously if you use `cosr()`/`random()` there: those are re-read every few milliseconds instead of once, so `g1: gendy(0, spread=cosr(0.4, 0.3, 8))` actually breathes in and out while it plays, not just once per note. Parameters that shape an envelope over time (fmpad's attack and release, for example) are the exception: Csound needs those fixed when the drone starts, so re-evaluating the line alone will not change them, only `kill` and redefining it will.",
-      "`lineto()` fades a drone in or out: `g1: gendy(0, amp=lineto(0, 1, 4))` fades in from silence over 4 seconds, and later re-evaluating `g1: gendy(0, amp=lineto(0, 3))` fades it back out over 3 seconds from whatever it is playing at right now, not from the start of the previous ramp. A bus's amp, pan and send amounts can be faded the same way -- see the Buses page. It is not accepted anywhere else (a player, a reverb, tempo/bar/scale/root, or combined with arithmetic).",
+      "`lineto()` fades a drone in or out: `g1: gendy(0, amp=lineto(0, 1, 4))` fades in from silence over 4 seconds, and later re-evaluating `g1: gendy(0, amp=lineto(0, 3))` fades it back out over 3 seconds from whatever it is playing at right now, not from the start of the previous ramp. A bus's amp, pan and send amounts, and every parameter of a delay, can be faded the same way -- see the Buses and Delay pages. It is not accepted anywhere else (a player, a reverb, tempo/bar/scale/root, or combined with arithmetic).",
       "`kill` stops a drone immediately, not at the next bar line, since it was never on the grid to begin with -- for a smooth stop instead of a hard cut, fade out with `lineto()` first and `kill` once it reaches 0.",
     ],
     example: 'rev1: reverb(decay=0.9)\ng1: gendy(0, oct=3, amp=lineto(0, 0.35, 4), spread=cosr(0.3, 0.25, 16), points=cosr(20, 15, 8))\nf1: fmpad(-2, oct=4, amp=0.3, send=rev1(0.4))\nkill g1',
@@ -367,12 +347,17 @@ export const GUIDE = {
     paragraphs: [
       "Built-in synths and the Csound instruments you define can both be used after the colon. An instrument called `Lead` is used as `Lead(...)`, and a numbered instrument such as `instr 10` as `i10(...)`.",
       "Some built-in synths have extra parameters of their own, listed below. They are written like any other parameter (`pluck([0, 2], bright=0.3)`), can use `cosr()` and `random()`, and unknown ones are reported as errors.",
+      "`cloud` can also take its grains from your own sound files. Put WAV, MP3, OGG or FLAC files in the `samples` folder next to the app and name one with `src=\"choir.wav\"`. The file loads the first time it is used (the console says when it is ready, and the cloud stays silent until then) and stays loaded until the page is reloaded; re-evaluating a line that failed to load tries again. Hold `position` still to freeze one moment of the file, or move it with `lineto()` on a drone to stretch the file out without changing its pitch.",
     ],
+    example: 'rev1: reverb(decay=0.9)\nc1: cloud([(0, 2, 4), (-1, 1, 4)], dur=4, oct=4, density=30, size=120, wave=cosr(1, 1, 16), send=rev1(0.4))\ng1: cloud(0, oct=4, src="choir.wav", position=lineto(0, 1, 60), size=150, density=40, spray=0.4)',
   },
   drums: {
     title: "Drums",
-    paragraphs: ["`play()` takes a string instead of a list of degrees. Each character is a drum voice or a `.` rest, and spaces are ignored so you can group steps visually."],
-    example: 'd1: play("x...o...", dur=1/2)\nd2: play("- [--] - [-=]", dur=1/2, amp=0.5)',
+    paragraphs: [
+      "`play()` takes a string instead of a list of degrees. Each character is a drum voice or a `.` rest, and spaces are ignored so you can group steps visually.",
+      '`kit="808"` switches to a synthesized 808-style kit with more voices: cowbell, toms, rimshot, claves, maracas and a cymbal besides the kick, snare, clap and hats. `decay`, `tune` and `tone` shape every kit: `decay` stretches or shortens every hit, `tune` shifts the pitch in semitones, and `tone` is each sound\'s own main knob (the kick\'s click, the snare\'s snappy noise, the hats\' brightness). Like any parameter they can be lists or `cosr()`, so `d2: play("-", dur=1/4, kit="808", decay=cosr(1.5, 1, 8))` opens and closes the hats over two bars.',
+    ],
+    example: 'd1: play("x...o...", dur=1/2)\nd2: play("- [--] - [-=]", dur=1/2, amp=0.5)\n\nb1: play("x..x ..x. x... ..x.", dur=1/4, kit="808", decay=2)\nb2: play(".... o... .... o..*", dur=1/4, kit="808", tone=0.7)\nb3: play("c.c. .c.c l.m.h...", dur=1/4, kit="808", amp=0.6)',
   },
   patterns: {
     title: "Patterns",
@@ -390,17 +375,27 @@ export const GUIDE = {
     title: "Reverb send and return",
     paragraphs: [
       "A reverb is a shared return bus. Players send part of their signal to it, and the reverb itself is a running instrument with its own parameters.",
-      "Define it with `rev1: reverb(...)`, then send to it from any player with `send=rev1(amount)`. Re-evaluating the reverb line changes its parameters live. A player can send to up to three reverbs, and the amount can be a list.",
+      "Define it with `rev1: reverb(...)`, then send to it from any player with `send=rev1(amount)`. Re-evaluating the reverb line changes its parameters live. A player can send to up to three reverbs or delays (see the Delay page), and the amount can be a list.",
       "After `kill rev1` the sends to it fall silent, and they stay silent: a reverb defined later never picks them up, even if it reuses the same slot. Re-evaluate the players that sent to it (pointing at another reverb) to hear their reverb again.",
     ],
     example: 'rev1: reverb(decay=0.9, lowcut=200, highcut=6000, level=0.5)\nrev2: reverb(decay=0.5, lowcut=400, highcut=9000, level=0.3)\np1: pluck([0, 2, 4], dur=1/2, send=[rev1(0.4), rev2(0.1)])',
+  },
+  delay: {
+    title: "Delay",
+    paragraphs: [
+      "A delay is a send effect like a reverb: define it with `echo1: delay(...)` and send to it with `send=echo1(amount)` from players, drones and buses. It outputs only the repeats, never the dry sound. Reverbs and delays share the send slots (see sendSlots on the Limits page), and a player can send to up to three of them in any mix: `send=[echo1(0.3), rev1(0.2)]`.",
+      "The time is in beats and follows the tempo, and every parameter updates live while it runs, like a bus's: re-evaluate the line, or use `cosr()` and `lineto()`. `feedback=lineto(0.95, 4)` swells the repeats into a long trail over four seconds; bring it back down the same way. A redefinition resets whatever it leaves out, so keep the other parameters on the line.",
+      "A delay can send its repeats on to reverbs with its own `send=`, after its level: `echo1: delay(time=3/4, send=rev1(0.4))` puts every echo in the hall. It cannot send to a delay, itself included.",
+      "`kill echo1` fades its repeats out in a tenth of a second. As with a reverb, whatever still sent to it falls silent until re-evaluated.",
+    ],
+    example: 'rev1: reverb(decay=0.9)\necho1: delay(time=3/4, feedback=0.55, pingpong=1, highcut=3500, wobble=0.3, send=rev1(0.3))\np1: pluck([0, 2, 4, 7], dur=1/2, send=echo1(0.35))\n; a slow dub swell, then back\necho1: delay(time=3/4, feedback=lineto(0.97, 4), pingpong=1, highcut=3500, wobble=0.3, drive=0.6, send=rev1(0.3))\necho1: delay(time=3/4, feedback=lineto(0.5, 2), pingpong=1, highcut=3500, wobble=0.3, send=rev1(0.3))',
   },
   buses: {
     title: "Buses",
     paragraphs: [
       "A bus is a mixing group, not a send: define one with `mix1: bus(amp=1, pan=0)`, then a player's whole output (not a copy of it) goes to a bus by writing the bus name after an @ right after the synth, e.g. `p1: pluck@mix1([0, 2, 4], dur=1/2)`. p1 no longer plays on its own; the bus's amp/pan control it and everything else routed there, together, as one group. Every built-in synth and every drum voice (play()) can be routed this way when it plays as a player (with dur=); a named or numbered instrument from your own Csound code cannot, and neither can a drone, a reverb or another bus -- writing @ on one of those is reported as an error.",
       "amp and pan update live while the bus runs, the same as a drone's do: re-evaluate the line with new plain numbers, or use `cosr()`/`lineto()` there and they keep refreshing on their own, about every 20ms.",
-      "A bus can feed reverbs too: `mix1: bus(send=rev1(0.4))`, or up to three with `send=[rev1(0.4), rev2(0.1)]`, sends the group's combined signal after its amp and pan (post-fader), so turning the bus down turns its reverb down with it. The amount updates live like amp and pan, and pointing the bus at a different reverb takes effect straight away, without restarting it.",
+      "A bus can feed reverbs and delays too: `mix1: bus(send=rev1(0.4))`, or up to three with `send=[rev1(0.4), rev2(0.1)]`, sends the group's combined signal after its amp and pan (post-fader), so turning the bus down turns its reverb down with it. The amount updates live like amp and pan, and pointing the bus at a different reverb or delay takes effect straight away, without restarting it.",
       "`send=` on a bussed player still works exactly as before and is independent of the bus: the note computes its own reverb send from its own dry signal before that signal is handed to the bus. The two add up, so a player with its own `send=rev1(0.3)` on a bus with `send=rev1(0.4)` reaches rev1 twice; usually you want one or the other.",
       "`kill mix1` stops the bus immediately. Players still routed to it do not error, they just go silent (the same as sending to a killed reverb) -- re-evaluate them, without @mix1 or with a different bus, to hear them again.",
     ],
@@ -410,7 +405,7 @@ export const GUIDE = {
     title: "Your own Csound instruments",
     paragraphs: [
       "Instruments are plain Csound. Named instruments (`instr Lead`) get a number automatically. Follow the field contract below so players can drive them, and call `revsend` after `outs` if you want them to accept `send=`.",
-      "Instrument numbers 9600 and above are reserved: a built-in synth or drum routed to a bus (name@busname) runs at its own instrument number + 9500, each dronable synth's continuous voice lives at its own instrument number + 9800 (e.g. saw, instr 103, becomes 9903 as a drone), the bus and reverb returns run at 9975 and 9980 and up, and 9985-9999 belong to send-bus clearing and the clock. Keep your own numbers below 9600.",
+      "Instrument numbers 9600 and above are reserved: a built-in synth or drum routed to a bus (name@busname) runs at its own instrument number + 9500, each dronable synth's continuous voice lives at its own instrument number + 9800 (e.g. saw, instr 103, becomes 9903 as a drone), the bus, delay and reverb returns run at 9975, 9977 and 9980 and up, and 9985-9999 belong to send-bus clearing and the clock. Keep your own numbers below 9600. Function tables from 5000 up hold sample files loaded with src=, so number your own tables below that.",
       "Classic score lines work as well. They start on the next bar line: the start time is in beats after it and the duration is in beats.",
       "Score lines call instruments by number. A named instrument is given a number when it is compiled and keeps no name inside Csound, so `i \"Lead\"` cannot reach it: give an instrument a number (`instr 10`) if you want to play it from score lines too. Players can use either kind.",
     ],

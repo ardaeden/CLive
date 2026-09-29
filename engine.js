@@ -1,35 +1,53 @@
 // Master clock and beat-locked launcher. All times are in beats, so tempo
 // changes keep every rhythmic element locked to the same grid.
-import { LIMITS, COMMAND_WORDS, SYNTHS, DRUMS, REVERB_PARAMS, BUS_PARAMS, csoundSource, droneParamKeys } from "./registry.js";
+import { LIMITS, COMMAND_WORDS, SYNTHS, DRUM_VOICES, DRUM_EXTRA_PARAMS, REVERB_PARAMS, DELAY_PARAMS, BUS_PARAMS, csoundSource, droneParamKeys } from "./registry.js";
 
-const REVERB_SLOTS = LIMITS.reverbSlots;
+// Send slots: each reverb or delay takes one, and owns the send bus (a zak pair) of that
+// number, which players, drones and buses send into (and delays, into reverbs).
+const SEND_SLOTS = LIMITS.sendSlots;
 const REVERB_PARAM_NAMES = Object.keys(REVERB_PARAMS);
 const DRONE_SLOTS = LIMITS.droneSlots;
+// Sample files get Csound table numbers from here up, one per file per session.
+const SAMPLE_TABLE_BASE = 5000;
 const BUS_SLOTS = LIMITS.busSlots;
 const BUS_PARAM_NAMES = Object.keys(BUS_PARAMS);
-// Drones with the most extra parameters (fmpad) need 5 generic channels; every
+// Drones with the most extra parameters (cloud) need 8 generic channels; every
 // dronable synth just uses as many of them as it has.
-const MAX_DRONE_EXTRAS = 5;
+const MAX_DRONE_EXTRAS = 8;
 // Synths that can run as a drone (a single, continuously running instance).
-export const DRONABLE_SYNTHS = Object.fromEntries(Object.entries(SYNTHS).filter(([, s]) => s.drone));
+const DRONABLE_SYNTHS = Object.fromEntries(Object.entries(SYNTHS).filter(([, s]) => s.drone));
+for (const [name, s] of Object.entries(DRONABLE_SYNTHS)) {
+  if (droneParamKeys(s).length > MAX_DRONE_EXTRAS) throw new Error(`Drone '${name}' has more live parameters than MAX_DRONE_EXTRAS (${MAX_DRONE_EXTRAS}) allows`);
+}
 
 const BUILTIN_SOURCE = [
   ...Object.values(SYNTHS).map((s) => s.udo ?? ""),
   ...Object.values(SYNTHS).map((s) => s.droneUdo ?? ""),
+  ...DRUM_VOICES.map((d) => d.udo ?? ""),
   ...Object.entries(SYNTHS).map(([name, s]) => csoundSource(name, s.instr, s.body)),
-  ...Object.values(DRUMS).map((d) => csoundSource(d.name, d.instr, d.body)),
+  ...DRUM_VOICES.map((d) => csoundSource(d.name, d.instr, d.body)),
 ].join("\n\n");
-const REVERB_CHANNELS = Array.from({ length: REVERB_SLOTS }, (_, slot) =>
+const REVERB_CHANNELS = Array.from({ length: SEND_SLOTS }, (_, slot) =>
   REVERB_PARAM_NAMES.map((p) => `chn_k "rev${slot}_${p}", 1`).join("\n"),
 ).join("\n");
 const reverbInstance = (slot) => (9980 + (slot + 1) / 100).toFixed(2);
 
-// A bus's own amp/pan channels plus its three reverb send pairs, one set per slot.
+// A bus's own amp/pan channels plus its three send pairs, one set per slot.
 const BUS_SEND_NAMES = ["s1slot", "s1amt", "s2slot", "s2amt", "s3slot", "s3amt"];
 const BUS_CHANNELS = Array.from({ length: BUS_SLOTS }, (_, slot) =>
   [...BUS_PARAM_NAMES, ...BUS_SEND_NAMES].map((p) => `chn_k "bus${slot}_${p}", 1`).join("\n"),
 ).join("\n");
 const busReturnInstance = (slot) => (9975 + (slot + 1) / 100).toFixed(2);
+
+// A delay's parameters plus its three send pairs, one set per send slot (a delay takes a
+// send slot, like a reverb). Its return runs as instr 9977.<slot>.
+const DELAY_PARAM_NAMES = Object.keys(DELAY_PARAMS);
+const DELAY_CHANNELS = Array.from({ length: SEND_SLOTS }, (_, slot) =>
+  [...DELAY_PARAM_NAMES, ...BUS_SEND_NAMES].map((p) => `chn_k "dly${slot}_${p}", 1`).join("\n"),
+).join("\n");
+const delayInstance = (slot) => (9977 + (slot + 1) / 100).toFixed(2);
+// Longest delay line in seconds; delay time= is capped to it however slow the tempo.
+const DELAY_MAX_SECONDS = 6;
 // Instrument number for a built-in synth or drum's bus-routed variant, derived from
 // its note instrument (mirrors droneInstance below, in its own reserved range).
 const busVariantInstance = (instr) => instr + 9500;
@@ -41,13 +59,13 @@ const busVariantInstance = (instr) => instr + 9500;
 function busVariantInstrSource(name, instr, body, busSlotField) {
   const busBody = body.replace(
     "outs aL, aR",
-    `ibusslot = p${busSlotField}\n  zawm aL, 2 * (${REVERB_SLOTS} + ibusslot), 1\n  zawm aR, 2 * (${REVERB_SLOTS} + ibusslot) + 1, 1`,
+    `ibusslot = p${busSlotField}\n  zawm aL, 2 * (${SEND_SLOTS} + ibusslot), 1\n  zawm aR, 2 * (${SEND_SLOTS} + ibusslot) + 1, 1`,
   );
   return csoundSource(`${name} (bus)`, busVariantInstance(instr), busBody);
 }
 const BUS_VARIANT_SOURCE = [
   ...Object.entries(SYNTHS).map(([name, s]) => busVariantInstrSource(name, s.instr, s.body, 13 + Object.keys(s.params ?? {}).length)),
-  ...Object.values(DRUMS).map((d) => busVariantInstrSource(d.name, d.instr, d.body, 13)),
+  ...DRUM_VOICES.map((d) => busVariantInstrSource(d.name, d.instr, d.body, 13 + Object.keys(DRUM_EXTRA_PARAMS).length)),
 ].join("\n\n");
 
 // A drone's own params (amp/freq/pan/sends/its synth's extras), one channel set per slot.
@@ -69,15 +87,24 @@ function droneExtras(s) {
   return droneParamKeys(s).map((key) => ({ key, live: s.params[key].unit !== "beats" }));
 }
 
+// Drone and bus parameters arrive from JS every LIMITS.droneUpdateMs as steps; a step
+// in a level (amp, pan, a send) is an audible click, so every value glides linearly to
+// the next over that same interval. Table numbers (src=) are the exception: a value
+// between two of them means nothing.
+const GLIDE = LIMITS.droneUpdateMs / 1000;
+
 // The Csound source of one dronable synth's continuous-voice instrument: reads its
-// params from this slot's channels (written from JS) instead of fixed p-fields.
+// params from this slot's channels (written from JS) instead of fixed p-fields. The
+// voice calls the last opcode in the synth's udo: helpers it uses come before it.
 function droneInstrSource(name, s) {
-  const call = (s.droneUdo ?? s.udo).match(/^opcode\s+(\w+)/m)[1];
+  const call = [...(s.droneUdo ?? s.udo).matchAll(/^opcode\s+(\w+)/gm)].pop()[1];
   const extras = droneExtras(s);
   const reads = extras.map(({ key, live }, i) => {
     const ch = `x${i + 1}`;
-    const lines = [`  S${ch} sprintf "drone%d_${ch}", islot`, `  k${ch} chnget S${ch}`];
-    if (!live) lines.push(`  i${ch} = i(k${ch})`);
+    const lines = [`  S${ch} sprintf "drone%d_${ch}", islot`];
+    if (!live) lines.push(`  k${ch} chnget S${ch}`, `  i${ch} = i(k${ch})`);
+    else if (s.params[key].kind === "sample") lines.push(`  k${ch} chnget S${ch}`);
+    else lines.push(`  k${ch} lineto chnget:k(S${ch}), ${GLIDE}`);
     return lines.join("\n");
   });
   const args = extras.map(({ live }, i) => (live ? `kx${i + 1}` : `ix${i + 1}`));
@@ -86,23 +113,32 @@ function droneInstrSource(name, s) {
   Samp sprintf "drone%d_amp", islot
   Sfreq sprintf "drone%d_freq", islot
   Span sprintf "drone%d_pan", islot
-  kamp chnget Samp
-  kfreq chnget Sfreq
-  kpan chnget Span
+  kamp lineto chnget:k(Samp), ${GLIDE}
+  kfreq lineto chnget:k(Sfreq), ${GLIDE}
+  kpan lineto chnget:k(Span), ${GLIDE}
 ${reads.join("\n")}
-  aL, aR ${call} kamp, kfreq, kpan${args.length ? ", " + args.join(", ") : ""}
+  ; The voice runs at unit level in the centre, and level and pan are applied here per
+  ; sample instead: a k-rate glide still moves in 32-sample steps, which buzz on a
+  ; moving amp or pan. Every dronable synth is linear in amp and pans with pan2's
+  ; equal-power law (0.707 each side in the centre), so this sounds the same; a new
+  ; dronable synth has to keep to that.
+  aL0, aR0 ${call} 1, kfreq, 0.5${args.length ? ", " + args.join(", ") : ""}
+  aamp interp kamp
+  apan interp limit(kpan, 0, 1) * 1.5707963
+  aL = aL0 * aamp * cos(apan) * 1.4142136
+  aR = aR0 * aamp * sin(apan) * 1.4142136
   outs aL, aR
-  ; Send slots are read at k-rate too, so re-pointing send= at another reverb takes
-  ; effect on the running drone, not only the next time it starts.
+  ; Send slots are read at k-rate too, so re-pointing send= at another reverb or delay
+  ; takes effect on the running drone, not only the next time it starts.
   Ss1 sprintf "drone%d_s1slot", islot
   Sa1 sprintf "drone%d_s1amt", islot
   Ss2 sprintf "drone%d_s2slot", islot
   Sa2 sprintf "drone%d_s2amt", islot
   Ss3 sprintf "drone%d_s3slot", islot
   Sa3 sprintf "drone%d_s3amt", islot
-  revsendk1 aL, aR, chnget:k(Ss1), chnget:k(Sa1)
-  revsendk1 aL, aR, chnget:k(Ss2), chnget:k(Sa2)
-  revsendk1 aL, aR, chnget:k(Ss3), chnget:k(Sa3)`;
+  revsendk1 aL, aR, chnget:k(Ss1), lineto:k(chnget:k(Sa1), ${GLIDE})
+  revsendk1 aL, aR, chnget:k(Ss2), lineto:k(chnget:k(Sa2), ${GLIDE})
+  revsendk1 aL, aR, chnget:k(Ss3), lineto:k(chnget:k(Sa3), ${GLIDE})`;
   return csoundSource(`${name} (drone)`, droneInstance(s.instr), body);
 }
 const DRONE_INSTR_SOURCE = Object.entries(DRONABLE_SYNTHS)
@@ -114,10 +150,13 @@ ksmps = 32
 nchnls = 2
 0dbfs = 1
 
-; Send buses: zak a-channels 2*slot (left) and 2*slot+1 (right), one slot per reverb,
-; followed by 2 more per mixing bus slot (offset by the reverb slots).
-zakinit ${(REVERB_SLOTS + BUS_SLOTS) * 2}, 1
+; Send buses: zak a-channels 2*slot (left) and 2*slot+1 (right), one slot per reverb or
+; delay, followed by 2 more per mixing bus slot (offset by the send slots).
+zakinit ${(SEND_SLOTS + BUS_SLOTS) * 2}, 1
 ${REVERB_CHANNELS}
+
+; Delay parameter channels (and send pairs), written from JS and read live by each delay return.
+${DELAY_CHANNELS}
 
 ; Bus parameter channels (amp/pan and send pairs), written from JS and read live by each bus return.
 ${BUS_CHANNELS}
@@ -180,10 +219,11 @@ instr 9999
 endin
 `;
 
-// Sends, reverb returns and the built-in instruments from the registry.
+// Sends, the bus, delay and reverb returns, and the built-in instruments from the registry.
 const SYNTH_SOURCE = `
 ; revsend aL, aR, p7, p8, p9, p10, p11, p12 mixes a note's signal into up to three
-; reverb buses. Call it after outs in your own instruments. Pairs are (slot, amount).
+; send buses (reverbs or delays). Call it after outs in your own instruments. Pairs are
+; (slot, amount).
 opcode revsend1, 0, aaik
   aInL, aInR, iSlot, kAmt xin
   if iSlot >= 0 && kAmt > 0 then
@@ -201,8 +241,8 @@ opcode revsend, 0, aaikikik
   revsend1 aInL, aInR, iS3, kA3
 endop
 
-; Like revsend1, but the reverb slot is k-rate too, so a running drone or bus return
-; can be pointed at a different reverb without restarting it.
+; Like revsend1, but the send slot is k-rate too, so a running drone, bus or delay
+; return can be pointed at a different reverb or delay without restarting it.
 opcode revsendk1, 0, aakk
   aInL, aInR, kSlot, kAmt xin
   if kSlot >= 0 && kAmt > 0 then
@@ -215,20 +255,24 @@ endop
 ; signals, so this only trims their overall level and left/right balance, it does not
 ; re-pan a mono source. Must run after every source that writes into it (a high
 ; instrument number, like the reverb return) and before the send-bus clear. Its own
-; send= goes to the reverbs after amp/pan (post-fader); it still runs before the
-; reverb returns (9980+), so they hear it in the same cycle.
+; send= goes to reverbs or delays after amp/pan (post-fader); it runs before the delay
+; (9977) and reverb (9980) returns, so they hear it in the same cycle.
 instr 9975
   islot = p4
   Samp sprintf "bus%d_amp", islot
   Span sprintf "bus%d_pan", islot
-  kamp chnget Samp
-  kpan chnget Span
-  aInL zar 2 * (${REVERB_SLOTS} + islot)
-  aInR zar 2 * (${REVERB_SLOTS} + islot) + 1
+  ; Glided like a drone's parameters, and the gains interpolated per sample, so a
+  ; moving amp or pan (cosr(), random()) does not click.
+  kamp lineto chnget:k(Samp), ${GLIDE}
+  kpan lineto chnget:k(Span), ${GLIDE}
+  aInL zar 2 * (${SEND_SLOTS} + islot)
+  aInR zar 2 * (${SEND_SLOTS} + islot) + 1
   kpanL = (kpan <= 0 ? 1 : 1 - kpan)
   kpanR = (kpan >= 0 ? 1 : 1 + kpan)
-  aOutL = aInL * kamp * kpanL
-  aOutR = aInR * kamp * kpanR
+  againL interp kamp * kpanL
+  againR interp kamp * kpanR
+  aOutL = aInL * againL
+  aOutR = aInR * againR
   outs aOutL, aOutR
   Ss1 sprintf "bus%d_s1slot", islot
   Sa1 sprintf "bus%d_s1amt", islot
@@ -236,9 +280,74 @@ instr 9975
   Sa2 sprintf "bus%d_s2amt", islot
   Ss3 sprintf "bus%d_s3slot", islot
   Sa3 sprintf "bus%d_s3amt", islot
-  revsendk1 aOutL, aOutR, chnget:k(Ss1), chnget:k(Sa1)
-  revsendk1 aOutL, aOutR, chnget:k(Ss2), chnget:k(Sa2)
-  revsendk1 aOutL, aOutR, chnget:k(Ss3), chnget:k(Sa3)
+  revsendk1 aOutL, aOutR, chnget:k(Ss1), lineto:k(chnget:k(Sa1), ${GLIDE})
+  revsendk1 aOutL, aOutR, chnget:k(Ss2), lineto:k(chnget:k(Sa2), ${GLIDE})
+  revsendk1 aOutL, aOutR, chnget:k(Ss3), lineto:k(chnget:k(Sa3), ${GLIDE})
+endin
+
+; Delay return: p4 = slot. Two delay lines (left, right) fed back through a high-pass,
+; a low-pass and a soft saturator, with optional ping-pong crossing, tape wow and
+; flutter on the time, and sends of its own (after level) to reverbs.
+; Parameters come from the dly<slot>_* channels and glide like a bus's. It runs after
+; the bus returns (9975), which may send to it, and before the reverbs (9980), which it
+; may send to.
+instr 9977
+  islot = p4
+${DELAY_PARAM_NAMES.map((p) => `  S${p} sprintf "dly%d_${p}", islot\n  k${p} lineto chnget:k(S${p}), ${GLIDE}`).join("\n")}
+  ; A new time glides over about 80 ms, like tape speeding up or slowing down, instead
+  ; of jumping (which would click); the repeats bend in pitch meanwhile.
+  ktime portk ktime, 0.08
+  kspread portk kspread, 0.08
+  ksecL = limit(ktime * 60 / gkbpm, 0.002, ${DELAY_MAX_SECONDS - 0.01})
+  ksecR = limit((ktime + kspread) * 60 / gkbpm, 0.002, ${DELAY_MAX_SECONDS - 0.01})
+  aInL zar 2 * islot
+  aInR zar 2 * islot + 1
+  ; Wow (slow) and flutter (fast), a little out of phase between the sides.
+  awowL oscili 0.004, 0.6
+  awowR oscili 0.004, 0.6, -1, 0.3
+  aflL oscili 0.0003, 6.3
+  aflR oscili 0.0003, 6.3, -1, 0.5
+  atL = interp(ksecL) + (awowL + aflL) * kwobble
+  atR = interp(ksecR) + (awowR + aflR) * kwobble
+  adumpL delayr ${DELAY_MAX_SECONDS}
+  atapL deltap3 atL
+  adumpR delayr ${DELAY_MAX_SECONDS}
+  atapR deltap3 atR
+  ; Each repeat passes the filters and the saturator once more: tanh(g * x) / g leaves
+  ; small signals alone and never exceeds 1 / g, so any feedback stays bounded.
+  ; The gains below are interpolated per sample, so a moving drive, feedback or
+  ; ping-pong does not step every 32 samples.
+  ag interp 1 + 3 * kdrive
+  afb interp kfeedback
+  app interp kpingpong
+  arL butterhp atapL, klowcut
+  arL butterlp arL, khighcut
+  arR butterhp atapR, klowcut
+  arR butterlp arR, khighcut
+  arL = tanh(arL * ag) / ag
+  arR = tanh(arR * ag) / ag
+  ; Ping-pong: the input enters on the left (as mono) and every repeat crosses sides.
+  amono = (aInL + aInR) * 0.7071
+  awL = (1 - app) * aInL + app * amono + afb * ((1 - app) * arL + app * arR)
+  awR = (1 - app) * aInR + afb * ((1 - app) * arR + app * arL)
+  ; delayw pairs with delayr in the order they were opened: first with first.
+  delayw awL
+  delayw awR
+  ; kill fades the repeats out over a tenth of a second instead of cutting them.
+  kfade linsegr 1, 1, 1, 0.1, 0
+  again interp klevel * kfade
+  aOutL = arL * again
+  aOutR = arR * again
+  outs aOutL, aOutR
+  Ss1 sprintf "dly%d_s1slot", islot
+  Sa1 sprintf "dly%d_s1amt", islot
+  Ss2 sprintf "dly%d_s2slot", islot
+  Sa2 sprintf "dly%d_s2amt", islot
+  Ss3 sprintf "dly%d_s3slot", islot
+  Sa3 sprintf "dly%d_s3amt", islot
+  revsendk1 aOutL, aOutR, chnget:k(Ss1), lineto:k(chnget:k(Sa1), ${GLIDE})
+  revsendk1 aOutL, aOutR, chnget:k(Ss2), lineto:k(chnget:k(Sa2), ${GLIDE})
+  revsendk1 aOutL, aOutR, chnget:k(Ss3), lineto:k(chnget:k(Sa3), ${GLIDE})
 endin
 
 ; Reverb return: p4 = slot. Parameters come from the rev<slot>_* channels.
@@ -261,9 +370,9 @@ instr 9980
   outs aOutL * klevel, aOutR * klevel
 endin
 
-; Clears all send buses (reverb and mixing bus) after the returns have read them.
+; Clears all send buses (reverb, delay and mixing bus) after the returns have read them.
 instr 9985
-  zacl 0, ${(REVERB_SLOTS + BUS_SLOTS) * 2 - 1}
+  zacl 0, ${(SEND_SLOTS + BUS_SLOTS) * 2 - 1}
 endin
 
 ${BUILTIN_SOURCE}
@@ -276,9 +385,9 @@ ${DRONE_INSTR_SOURCE}
 // Bus-routed variants are note-triggered like the plain ones, so silence() (which stops
 // every player) needs to know about them too; the bus return instrument itself is not
 // included here, since it keeps running like a reverb's -- kill it by name instead.
-const BASE_INSTRS = [...Object.values(SYNTHS), ...Object.values(DRUMS)].map((x) => x.instr);
+const BASE_INSTRS = [...Object.values(SYNTHS), ...DRUM_VOICES].map((x) => x.instr);
 const BUILTIN_INSTRS = [...BASE_INSTRS.map(String), ...BASE_INSTRS.map((instr) => String(busVariantInstance(instr)))];
-export const FOX_START = [
+const FOX_START = [
   // name: synth(...) or name: synth@busname(...) — a definition. Requires a call on
   // the same line so a bare Csound label ("loop:") is never mistaken for a player
   // statement.
@@ -286,9 +395,9 @@ export const FOX_START = [
   // A reserved command word at the start of the line: kill d1, tempo 108, clear, ...
   new RegExp(`^\\s*(${COMMAND_WORDS.join("|")})\\b`),
 ];
-export const SCORE_LINE = /^\s*[ifeatqrsmnvxy](\s|$)/;
+const SCORE_LINE = /^\s*[ifeatqrsmnvxy](\s|$)/;
 
-export function bracketDelta(line) {
+function bracketDelta(line) {
   let d = 0;
   let quote = null;
   for (const c of line) {
@@ -383,7 +492,7 @@ export function splitCode(code) {
 
 // Rewrites "i" events with a positive numeric p1 into bar-quantized launcher
 // events; anything else (f, e, turnoffs, strings) is sent as is.
-export function quantize(line) {
+function quantize(line) {
   const f = line.trim().split(/\s+/);
   const numeric = f.slice(1).every((x) => x !== "" && !Number.isNaN(Number(x)));
   if (f[0] !== "i" || f.length < 4 || !numeric || Number(f[1]) <= 0) return line;
@@ -401,6 +510,7 @@ export function createEngine(Csound, { onMessage }) {
   let polling = false;
   const instrs = new Set(BUILTIN_INSTRS);
   const reverbsRunning = new Set();
+  const delaysRunning = new Set();
   const dronesRunning = new Map();
   const busesRunning = new Set();
   const aliases = new Map();
@@ -408,6 +518,50 @@ export function createEngine(Csound, { onMessage }) {
   // refreshed every tick (LIMITS.droneUpdateMs), but most of their values sit still, and
   // every write is a message to the audio thread -- so only changes are sent.
   const channelCache = new Map();
+  // Sample files: decoded once per page and kept across Stop/Start (name -> promise of
+  // the samples), but copied into a Csound table per session (name -> { table, promise }),
+  // since a new Csound instance starts with no tables of its own.
+  const decoded = new Map();
+  const sampleTables = new Map();
+  let nextSampleTable = SAMPLE_TABLE_BASE;
+
+  // Mono, at the context's sample rate, at most LIMITS.maxSampleSeconds long and
+  // normalized to a peak of 1, so every file plays at a comparable level.
+  function decodeSample(name) {
+    if (!decoded.has(name)) {
+      const promise = (async () => {
+        // server.py serves samples at an address without the file's extension, which
+        // download managers leave alone (see server.py); any other server gets the plain
+        // path. A 404 from server.py itself (it marks its replies) means the file is missing.
+        let res = await fetch(`sample?f=${encodeURIComponent(name)}`);
+        if (res.status === 404 && !res.headers.get("X-CLive")) res = await fetch(`samples/${name.split("/").map(encodeURIComponent).join("/")}`);
+        if (res.status === 204) throw new Error(`Sample '${name}' was intercepted (${res.statusText || "empty reply"}): a download manager such as IDM is catching the request; run CLive with server.py, or exclude 127.0.0.1 in the download manager`);
+        if (!res.ok) throw new Error(`Sample '${name}' not found: put the file in the samples folder`);
+        const bytes = await res.arrayBuffer();
+        let audio;
+        try {
+          audio = await audioCtx.decodeAudioData(bytes);
+        } catch (e) {
+          throw new Error(`Sample '${name}' could not be decoded (${e?.message ?? e}): use WAV, MP3, OGG or FLAC`);
+        }
+        const length = Math.min(audio.length, Math.round(LIMITS.maxSampleSeconds * audio.sampleRate));
+        if (!length) throw new Error(`Sample '${name}' is empty`);
+        const data = new Float64Array(length);
+        for (let c = 0; c < audio.numberOfChannels; c++) {
+          const ch = audio.getChannelData(c);
+          for (let i = 0; i < length; i++) data[i] += ch[i] / audio.numberOfChannels;
+        }
+        let peak = 0;
+        for (let i = 0; i < length; i++) peak = Math.max(peak, Math.abs(data[i]));
+        if (peak > 0) for (let i = 0; i < length; i++) data[i] /= peak;
+        return { data, seconds: length / audio.sampleRate, trimmed: length < audio.length };
+      })();
+      // A failed file is tried again the next time it is asked for (it may have been fixed).
+      promise.catch(() => decoded.delete(name));
+      decoded.set(name, promise);
+    }
+    return decoded.get(name);
+  }
 
   function setChannel(name, value) {
     if (channelCache.get(name) === value) return;
@@ -470,6 +624,8 @@ export function createEngine(Csound, { onMessage }) {
         csound.on("message", onMessage);
         await csound.setOption("-odac");
         await csound.setOption("-m0");
+        // No ASCII drawings of function tables in the console: cloud makes one per note.
+        await csound.setOption("-d");
         await csound.setOption("--sample-accurate");
         if ((await csound.compileOrc(HEADER)) !== 0) throw new Error("Failed to compile header.");
         await csound.start();
@@ -478,19 +634,21 @@ export function createEngine(Csound, { onMessage }) {
         await csound.inputMessage("i 9990 0 -1");
         await csound.inputMessage("i 9985 0 -1");
 
-        const ctx = await csound.getAudioContext();
         const node = await csound.getNode();
-        const analyser = ctx.createAnalyser();
+        const analyser = audioCtx.createAnalyser();
         analyser.fftSize = 2048;
         node.connect(analyser);
 
-        // A new Csound session knows none of the instruments, reverbs or channel values of
-        // the previous one.
+        // A new Csound session knows none of the instruments, reverbs, tables or channel
+        // values of the previous one.
         channelCache.clear();
+        sampleTables.clear();
+        nextSampleTable = SAMPLE_TABLE_BASE;
         instrs.clear();
         BUILTIN_INSTRS.forEach((n) => instrs.add(n));
         aliases.clear();
         reverbsRunning.clear();
+        delaysRunning.clear();
         dronesRunning.clear();
         busesRunning.clear();
         bpm = 120;
@@ -519,8 +677,49 @@ export function createEngine(Csound, { onMessage }) {
       return { beat: clock.beat + (dt * bpm) / 60, bpm, bar };
     },
 
+    // Seconds between Csound rendering a sample and it leaving the speakers. now() is
+    // Csound's time, so anything shown to the user in step with the sound (the bar.beat
+    // display, log() lines) waits this long; scheduling itself does not need it.
+    outputLatency() {
+      return audioCtx ? (audioCtx.outputLatency || audioCtx.baseLatency || 0) : 0;
+    },
+
     resolveInstrument(name) {
       return aliases.get(name);
+    },
+
+    // A sample file's table in this session. `table` is its number once it is ready
+    // (undefined while it loads or after it failed), and `fraction` how much of that
+    // table the file fills (the rest is padding); `promise` settles with the load's
+    // details or its error; `fresh` is true only for the call that started loading it.
+    // A file that failed stays failed (no retry on every note) until `retry` is set,
+    // which the player language does when the line using it is evaluated again.
+    sample(name, retry = false) {
+      const known = sampleTables.get(name);
+      if (known && !(known.failed && retry)) return { ...known, fresh: false };
+      const session = csound;
+      const entry = { table: undefined };
+      entry.promise = decodeSample(name).then(async (s) => {
+        if (csound !== session) throw Object.assign(new Error("Stopped before the sample was loaded"), { quiet: true });
+        // Grain opcodes (grain3) address a table as if its length were a power of two,
+        // so the file is padded with silence up to one; `fraction` is the part of the
+        // table the file itself takes up, for scaling positions within it.
+        const size = 2 ** Math.ceil(Math.log2(s.data.length));
+        const padded = new Float64Array(size);
+        padded.set(s.data);
+        const table = nextSampleTable++;
+        if ((await csound.compileOrc(`giCliveSample ftgen ${table}, 0, ${size}, -2, 0`)) !== 0) {
+          throw new Error(`Sample '${name}': Csound could not make a table for it`);
+        }
+        await csound.tableCopyIn(table, padded);
+        Object.assign(entry, { table, fraction: s.data.length / size });
+        return { table, seconds: s.seconds, trimmed: s.trimmed };
+      });
+      entry.promise.catch(() => {
+        entry.failed = true;
+      });
+      sampleTables.set(name, entry);
+      return { ...entry, fresh: true };
     },
 
     // Returns short messages describing what was compiled and scheduled.
@@ -558,7 +757,7 @@ export function createEngine(Csound, { onMessage }) {
     },
 
     // Schedules one note at an absolute beat. p3 (sus) is in beats. sends: up to
-    // three [slot, amount] pairs for the reverb buses. extras: the synth's own
+    // three [slot, amount] pairs for the send buses. extras: the synth's own
     // parameters, which become p13 and up. busSlot (or null): routes the note's whole
     // output to that mixing bus instead of the speakers, via the synth's bus-routed
     // variant instrument -- send= is unaffected, it still fires from the same instrs.
@@ -584,17 +783,39 @@ export function createEngine(Csound, { onMessage }) {
       await csound.inputMessage(`i -${reverbInstance(slot)} 0 0`);
     },
 
+    // Writes a delay's parameter and send channels without touching whether its return
+    // is running -- used every tick for cosr()/lineto()-driven values, like a bus.
+    async updateDelay(slot, { params, sends }) {
+      const prefix = `dly${slot}_`;
+      await Promise.all([...Object.entries(params).map(([k, v]) => setChannel(prefix + k, v)), ...sendWrites(prefix, sends)]);
+    },
+
+    // Writes the delay's channels and starts its return if it is not already running.
+    async defineDelay(slot, channels) {
+      await this.updateDelay(slot, channels);
+      if (delaysRunning.has(slot)) return;
+      delaysRunning.add(slot);
+      await csound.inputMessage(`i ${delayInstance(slot)} 0 -1 ${slot}`);
+    },
+
+    // Its repeats fade out over a tenth of a second (linsegr in instr 9977).
+    async stopDelay(slot) {
+      if (!delaysRunning.has(slot)) return;
+      delaysRunning.delete(slot);
+      await csound.inputMessage(`i -${delayInstance(slot)} 0 0`);
+    },
+
     // Writes a drone's channels without touching whether it is running: amp/freq/pan
     // are plain numbers, sends up to three [slot, amount] pairs, extras positional.
-    async updateDrone(slot, { amp, freq, pan, sends, extras } = {}) {
+    async updateDrone(slot, { amp, freq, pan, sends, extras }) {
       const prefix = `drone${slot}_`;
-      const writes = [];
-      if (amp !== undefined) writes.push(setChannel(`${prefix}amp`, amp));
-      if (freq !== undefined) writes.push(setChannel(`${prefix}freq`, freq));
-      if (pan !== undefined) writes.push(setChannel(`${prefix}pan`, pan));
-      if (sends) writes.push(...sendWrites(prefix, sends));
-      if (extras) extras.forEach((v, i) => writes.push(setChannel(`${prefix}x${i + 1}`, v)));
-      await Promise.all(writes);
+      await Promise.all([
+        setChannel(`${prefix}amp`, amp),
+        setChannel(`${prefix}freq`, freq),
+        setChannel(`${prefix}pan`, pan),
+        ...sendWrites(prefix, sends),
+        ...extras.map((v, i) => setChannel(`${prefix}x${i + 1}`, v)),
+      ]);
     },
 
     // Writes the drone's channels and (re)starts its continuous voice if it is not
@@ -617,13 +838,9 @@ export function createEngine(Csound, { onMessage }) {
 
     // Writes a bus's amp/pan/send channels without touching whether its return instrument
     // is running -- used every tick for cosr()/lineto()-driven values, same as a drone.
-    async updateBus(slot, { amp, pan, sends } = {}) {
+    async updateBus(slot, { amp, pan, sends }) {
       const prefix = `bus${slot}_`;
-      const writes = [];
-      if (amp !== undefined) writes.push(setChannel(`${prefix}amp`, amp));
-      if (pan !== undefined) writes.push(setChannel(`${prefix}pan`, pan));
-      if (sends) writes.push(...sendWrites(prefix, sends));
-      await Promise.all(writes);
+      await Promise.all([setChannel(`${prefix}amp`, amp), setChannel(`${prefix}pan`, pan), ...sendWrites(prefix, sends)]);
     },
 
     // Writes the bus's channels and starts its return instrument if it is not already running.

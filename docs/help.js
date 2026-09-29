@@ -2,7 +2,7 @@
 // <body data-section="..."> names the section to show, so the content is always
 // generated from the app's own data and cannot go stale.
 import {
-  LIMITS, LIMIT_DOCS, COMMAND_WORDS, SYNTHS, DRUMS, SCALES, PLAYER_PARAMS, REVERB_PARAMS, BUS_PARAMS,
+  LIMITS, LIMIT_DOCS, COMMAND_WORDS, SYNTHS, DRUM_KITS, DRUM_PARAMS, SCALES, PLAYER_PARAMS, REVERB_PARAMS, DELAY_PARAMS, BUS_PARAMS,
   SHORTCUTS, COMMANDS, PATTERN_SYNTAX, DRUM_SYNTAX, FUNCTIONS, CONTRACT, GUIDE, csoundSource,
 } from "../registry.js";
 import { highlight } from "../highlight.js";
@@ -90,8 +90,8 @@ const synthParams = (name, s) =>
         ["Parameter", "Default", "Range", "Description"],
         Object.entries(s.params).map(([key, p]) => [
           mono(key),
-          mono(`${p.default}${p.unit ? " " + p.unit : ""}`),
-          mono(`${p.min} to ${p.max}`),
+          mono(`${p.shown ?? p.default}${p.unit ? " " + p.unit : ""}`),
+          mono(p.kind === "sample" ? "file name" : `${p.min} to ${p.max}`),
           docOf(`SYNTHS.${name}.params.${key}`, p.doc),
         ]),
       )
@@ -121,9 +121,22 @@ const builders = {
   ],
 
   drums: () => [
+    ...Object.entries(DRUM_KITS).flatMap(([kit, voices]) => [
+      h("h3", {}, `kit="${kit}"${kit === DRUM_PARAMS.kit.default ? " (the default)" : ""}`),
+      table(
+        ["Character", "Sound", "Instrument", "Description"],
+        Object.entries(voices).map(([ch, d]) => [mono(`"${ch}"`), d.name, mono(String(d.instr)), [docOf(`DRUM_KITS["${kit}"]["${ch}"]`, d.doc), sourceDetails(d.name, d.instr, d.body, d.udo)]]),
+      ),
+    ]),
+    h("h3", {}, "play() parameters"),
     table(
-      ["Character", "Sound", "Instrument", "Description"],
-      Object.entries(DRUMS).map(([ch, d]) => [mono(`"${ch}"`), d.name, mono(String(d.instr)), [docOf(`DRUMS.${ch}`, d.doc), sourceDetails(d.name, d.instr, d.body)]]),
+      ["Parameter", "Default", "Range", "Description"],
+      Object.entries(DRUM_PARAMS).map(([key, p]) => [
+        mono(key),
+        mono(`${p.shown ?? p.default}`),
+        mono(p.kind === "kit" ? Object.keys(DRUM_KITS).map((k) => `"${k}"`).join(", ") : `${p.min} to ${p.max}`),
+        docOf(`DRUM_PARAMS.${key}`, p.doc),
+      ]),
     ),
     table(["Syntax", "Meaning"], DRUM_SYNTAX.map((x, i) => [codeCell(x.syntax), docOf(`DRUM_SYNTAX[${i}]`, x.doc)])),
   ],
@@ -141,6 +154,13 @@ const builders = {
 
   reverb: () => [
     table(["Parameter", "Default", "Description"], Object.entries(REVERB_PARAMS).map(([name, p]) => [mono(name), mono(String(p.default)), docOf(`REVERB_PARAMS.${name}`, p.doc)])),
+  ],
+
+  delay: () => [
+    table(
+      ["Parameter", "Default", "Range", "Description"],
+      Object.entries(DELAY_PARAMS).map(([name, p]) => [mono(name), mono(String(p.default)), mono(`${p.min} to ${p.max}`), docOf(`DELAY_PARAMS.${name}`, p.doc)]),
+    ),
   ],
 
   buses: () => [

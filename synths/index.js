@@ -13,5 +13,6 @@ import { fmbass } from "./107-fmbass.js";
 import { gendy } from "./108-gendy.js";
 import { reso } from "./109-reso.js";
 import { wood } from "./110-wood.js";
+import { cloud } from "./111-cloud.js";
 
-export const SYNTHS = { pluck, bass, saw, pad, fmkeys, fmpad, fmbass, gendy, reso, wood };
+export const SYNTHS = { pluck, bass, saw, pad, fmkeys, fmpad, fmbass, gendy, reso, wood, cloud };
