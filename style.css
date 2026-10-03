@@ -24,7 +24,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .tab-close:hover, #tab-add:hover:not(:disabled) { opacity: 1; background: #343a46; }
 #tab-add { padding: 0 12px; color: var(--dim); }
 .editor-wrap { position: relative; flex: 1; min-height: 0; background: var(--bg); }
-#editor, #flash, #highlight { position: absolute; inset: 0; margin: 0; padding: 16px; border: 0; font: 15px/1.5 Consolas, "Cascadia Mono", monospace; tab-size: 2; white-space: pre; letter-spacing: 0; }
+#editor, #flash, #marks, #highlight { position: absolute; inset: 0; margin: 0; padding: 16px; border: 0; font: 15px/1.5 Consolas, "Cascadia Mono", monospace; tab-size: 2; white-space: pre; letter-spacing: 0; }
 #editor { width: 100%; height: 100%; resize: none; outline: 0; overflow: auto; background: transparent; color: transparent; caret-color: var(--fg); }
 #editor::selection { background: rgba(108, 182, 255, .3); color: transparent; }
 #highlight { overflow: hidden; color: var(--fg); pointer-events: none; }
@@ -33,6 +33,18 @@ main { flex: 1; display: flex; min-height: 0; }
 #flash span.err { --flash: 255, 123, 114; }
 #flash span.kill { --flash: 255, 166, 87; }
 @keyframes flash { from { background: rgba(var(--flash, 108, 182, 255), .55); } to { background: rgba(var(--flash, 108, 182, 255), 0); } }
+#marks { overflow: hidden; color: transparent; pointer-events: none; }
+#marks .match { outline: 1px solid rgba(108, 182, 255, .8); border-radius: 2px; }
+#marks .lint { text-decoration: underline wavy var(--err); text-decoration-thickness: 1px; text-underline-offset: 4px; }
+#complete { position: absolute; z-index: 5; min-width: 220px; max-width: 560px; max-height: 240px; overflow-y: auto; background: var(--panel); border: 1px solid #343a46; border-radius: 4px; box-shadow: 0 6px 18px rgba(0, 0, 0, .45); font: 13px/1.4 Consolas, "Cascadia Mono", monospace; }
+#complete .item { display: flex; gap: 12px; padding: 3px 10px; cursor: pointer; white-space: nowrap; }
+#complete .item.active { background: #2b3445; }
+#complete .label { color: var(--fg); }
+#complete .detail { color: var(--dim); overflow: hidden; text-overflow: ellipsis; font-family: system-ui, sans-serif; font-size: 12px; }
+#info { min-height: 26px; padding: 4px 16px; border-top: 1px solid #262a32; background: var(--panel); color: var(--dim); font: 12px/1.5 Consolas, "Cascadia Mono", monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#info .cur { color: var(--accent); font-weight: 600; }
+#info .doc { font-family: system-ui, sans-serif; }
+#info .err { color: var(--err); }
 aside { width: 420px; max-width: 40%; display: flex; flex-direction: column; border-left: 1px solid #262a32; background: var(--panel); }
 #scope { width: 100%; height: 160px; background: #0d0f12; border-bottom: 1px solid #262a32; }
 #console { flex: 1; margin: 0; padding: 10px 12px; overflow: auto; font: 12px/1.45 Consolas, monospace; color: var(--dim); white-space: pre-wrap; }

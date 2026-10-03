@@ -662,7 +662,10 @@ function midiToFreq(midi) {
   return clamp(hz, LIMITS.minFreq, LIMITS.maxFreq);
 }
 
-export function createFox(engine, { onTempo, onBar, onError, onLog }) {
+// With lint=true it only checks code for the editor: it runs against a stand-in engine,
+// and skips the checks that depend on what is live right now (a name already used by
+// another kind, killing a name that is not defined), which the code alone cannot know.
+export function createFox(engine, { onTempo, onBar, onError, onLog, lint = false }) {
   const say = (message, kind = "info") => onLog?.(message, kind);
 
   // Delayed console lines (log players); cancelled when everything is cleared.
@@ -703,6 +706,7 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
   // another kind; `hints` adds a kind-specific suggestion to the message.
   const KINDS = { player: players, reverb: reverbs, drone: drones, bus: buses, delay: delays };
   function claimName(name, kind, hints = {}) {
+    if (lint) return;
     for (const [other, map] of Object.entries(KINDS)) {
       if (other !== kind && map.has(name)) throw new Error(`'${name}' is a ${other}, pick another name${hints[other] ?? ""}`);
     }
@@ -1326,7 +1330,7 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
       players.get(name).pending = { at, spec: null };
       say(`${name} killed: stops at ${describeTarget(at, now)}`, "kill");
     } else {
-      throw new Error(`No player, reverb, delay, drone or bus named '${name}'`);
+      if (!lint) throw new Error(`No player, reverb, delay, drone or bus named '${name}'`);
     }
   }
 
@@ -1408,7 +1412,7 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
       const escape = (part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
       const re = new RegExp("^" + pattern.split("*").map(escape).join(".*") + "$");
       const names = [...players.keys(), ...reverbs.keys(), ...drones.keys(), ...buses.keys(), ...delays.keys()].filter((n) => re.test(n));
-      if (!names.length) throw new Error(`No player, reverb, delay, drone or bus matches '${pattern}'`);
+      if (!names.length && !lint) throw new Error(`No player, reverb, delay, drone or bus matches '${pattern}'`);
       for (const n of names) killOne(n);
     },
 
@@ -1423,6 +1427,12 @@ export function createFox(engine, { onTempo, onBar, onError, onLog }) {
     // together at the end, after the others have run. With a lineOffset (the editor
     // line `code` starts on, 0-based), each message is prefixed with its editor line
     // number and the error's `lines` lists those lines (0-based) for highlighting.
+    // The errors running `code` would report, as { line, message } (line 0-based in
+    // `code`), without throwing. Meant for a lint instance.
+    check(code) {
+      return new Parser(code, ctx).run();
+    },
+
     run(code, lineOffset = null) {
       const errors = new Parser(code, ctx).run();
       if (!errors.length) return;

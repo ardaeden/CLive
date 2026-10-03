@@ -2,6 +2,7 @@ import { Csound } from "./lib/csound.js";
 import { createEngine, splitCode, classifyLines } from "./engine.js";
 import { createFox } from "./fox.js";
 import { highlight, escapeHtml } from "./highlight.js";
+import { createAssist } from "./assist.js";
 import { SHORTCUTS, LIMITS } from "./registry.js";
 
 const $ = (id) => document.getElementById(id);
@@ -47,6 +48,9 @@ const renderHighlight = () => (highlightEl.innerHTML = highlight(editor.value));
 // Every launch starts from the example in one "main" tab; Load/Save keeps scenes in files.
 const state = { tabs: [{ name: "main", code: SAMPLE }], active: 0 };
 
+// Suggestions, the line under the editor, bracket outlines and error marks (assist.js).
+const assist = createAssist({ editor, wrap: editor.parentElement, marks: $("marks"), info: $("info"), texts: () => state.tabs.map((t) => t.code) });
+
 const activeTab = () => state.tabs[state.active];
 
 function showTab() {
@@ -59,6 +63,7 @@ function showTab() {
   editor.scrollTop = tab.scroll ?? 0;
   editor.scrollLeft = 0;
   for (const el of [flashEl, highlightEl]) el.scrollTop = editor.scrollTop;
+  assist.refresh();
 }
 
 function selectTab(i) {
@@ -129,10 +134,11 @@ function renderTabs() {
   tabsEl.replaceChildren(...items, add);
 }
 
-editor.addEventListener("input", () => {
+editor.addEventListener("input", (ev) => {
   activeTab().code = editor.value;
   setDirty(true);
   renderHighlight();
+  assist.onInput(ev);
 });
 
 // A short status line for something the user just did; kind is "info" or "kill".
@@ -333,14 +339,18 @@ function killPlayers() {
   }
 }
 
+// "Space" names the space bar. A punctuation key ignores Shift, since some layouts need
+// it to type the character at all (Ctrl+/ is Ctrl+Shift+7 on a Turkish keyboard).
 const matchKeys = (ev, keys) => {
   const parts = keys.split("+");
-  const key = parts.pop().toLowerCase();
+  let key = parts.pop().toLowerCase();
+  if (key === "space") key = " ";
   const mods = new Set(parts.map((m) => m.toLowerCase()));
+  const punctuation = key.length === 1 && !/[a-z0-9 ]/.test(key);
   return (
     ev.ctrlKey === mods.has("ctrl") &&
     ev.altKey === mods.has("alt") &&
-    ev.shiftKey === mods.has("shift") &&
+    (punctuation || ev.shiftKey === mods.has("shift")) &&
     ev.key.toLowerCase() === key
   );
 };
@@ -387,6 +397,28 @@ function outdent() {
   }
 }
 
+// Ctrl+/: the selected lines (or the cursor's) commented out with "; " at their common
+// indentation, or uncommented when they all already are. Blank lines are left alone.
+function toggleComment() {
+  const { selectionStart: a, selectionEnd: b } = editor;
+  const { start, end, text } = selectedLines();
+  const lines = text.split("\n");
+  const filled = lines.filter((l) => l.trim());
+  if (!filled.length) return;
+  const uncomment = filled.every((l) => /^\s*;/.test(l));
+  const indent = Math.min(...filled.map((l) => l.length - l.trimStart().length));
+  const next = lines
+    .map((l) => (!l.trim() ? l : uncomment ? l.replace(/^(\s*);\s?/, "$1") : l.slice(0, indent) + "; " + l.slice(indent)))
+    .join("\n");
+  replaceLines(start, end, next);
+  if (a === b) {
+    const at = Math.max(start, a + next.length - text.length);
+    editor.setSelectionRange(at, at);
+  } else {
+    editor.setSelectionRange(start, start + next.length);
+  }
+}
+
 const shortcutActions = {
   evalBlock: () => evaluate(currentBlock()),
   evalLine: () => evaluate(statementRange(false)),
@@ -396,6 +428,8 @@ const shortcutActions = {
   outdent,
   saveScene,
   loadScene,
+  complete: () => assist.open(),
+  comment: toggleComment,
 };
 
 // ---- scenes: every tab, plus tempo and bar, saved to and loaded from a .clive file ----
@@ -573,6 +607,8 @@ function autoPair(ev) {
 }
 
 editor.addEventListener("keydown", (ev) => {
+  // An open suggestion list takes the arrow keys, Tab, Enter and Esc first.
+  if (assist.handleKey(ev)) return ev.preventDefault();
   const shortcut = SHORTCUTS.find((s) => matchKeys(ev, s.keys));
   if (shortcut) {
     ev.preventDefault();

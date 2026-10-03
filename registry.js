@@ -190,6 +190,8 @@ export const SHORTCUTS = [
   { id: "silence", label: "silence", keys: "Ctrl+.", doc: "Stop all players and silence every running instrument, including notes routed to a bus. Reverbs, drones and buses themselves keep running." },
   { id: "indent", label: "indent", keys: "Tab", doc: "Insert two spaces; with a selection, indent every selected line instead of replacing it." },
   { id: "outdent", label: "outdent", keys: "Shift+Tab", doc: "Remove up to two leading spaces from the cursor's line, or from every selected line." },
+  { id: "complete", label: "suggest", keys: "Ctrl+Space", doc: "Show suggestions for what can go at the cursor: synths after name:, a synth's parameters inside its parentheses, defined reverbs and delays after send=, buses after @, scale and kit names, functions, commands. They also appear on their own while you type. Arrow keys choose, Tab or Enter inserts, Esc closes." },
+  { id: "comment", label: "comment", keys: "Ctrl+/", doc: "Comment out the cursor's line or every selected line with ;, or uncomment them if they all are already. Works with any keyboard layout that needs Shift for /." },
   { id: "saveScene", label: "save", keys: "Ctrl+S", global: true, doc: "Save the scene -- every tab (name and code), which one is open, and the BPM and Beats/bar boxes -- as a .clive file. Same as the Save button. Where the browser allows it you pick the file and name; otherwise the file is downloaded. Works with the cursor anywhere on the page." },
   { id: "loadScene", label: "load", keys: "Ctrl+O", global: true, doc: "Open a .clive scene: its tabs replace the current ones (you are asked first if they have unsaved changes) and its BPM and Beats/bar are set. Nothing starts playing on its own; evaluate the code to hear it. Same as the Load button." },
 ];
@@ -311,7 +313,10 @@ export const GUIDE = {
   },
   keys: {
     title: "Keyboard shortcuts",
-    paragraphs: ["These work while the cursor is in the editor."],
+    paragraphs: [
+      "These work while the cursor is in the editor.",
+      "The editor helps with player code as you type: suggestions open for synths, parameters, defined names, scales, kits and functions (or press `Ctrl+Space`); the line under the editor documents whatever the cursor is in, such as the current parameter of a synth with its range; the bracket matching the one at the cursor is outlined; and a line that would fail when evaluated is underlined in red, with the reason shown under the editor when the cursor is on it. The check is the same one evaluation does, without running anything.",
+    ],
   },
   timing: {
     title: "Timing",
