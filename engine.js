@@ -49,7 +49,7 @@ const delayInstance = (slot) => (9977 + (slot + 1) / 100).toFixed(2);
 // Longest delay line in seconds; delay time= is capped to it however slow the tempo.
 const DELAY_MAX_SECONDS = 6;
 // Instrument number for a built-in synth or drum's bus-routed variant, derived from
-// its note instrument (mirrors droneInstance below, in its own reserved range).
+// its note instrument (mirrors droneInstr below, in its own reserved range).
 const busVariantInstance = (instr) => instr + 9500;
 
 // The bus-routed variant of a synth/drum's body: identical DSP, but its final
@@ -77,8 +77,12 @@ const DRONE_CHANNEL_NAMES = [
 const DRONE_CHANNELS = Array.from({ length: DRONE_SLOTS }, (_, slot) =>
   DRONE_CHANNEL_NAMES.map((n) => `chn_k "drone${slot}_${n}", 1`).join("\n"),
 ).join("\n");
-// instrument number for a dronable synth's continuous voice, derived from its note instrument.
-const droneInstance = (instr) => instr + 9800;
+// Instrument number for a dronable synth's continuous voice, derived from its note instrument.
+const droneInstr = (instr) => instr + 9800;
+// The running voice in one drone slot, e.g. 9906.02. Each slot needs its own fractional
+// number: a second held note on the same number would not start a new voice but tie into
+// the one already sounding, so two drones of the same synth would share one voice.
+const droneInstance = (instr, slot) => (droneInstr(instr) + (slot + 1) / 100).toFixed(2);
 
 // A dronable synth's own extra parameters for drone mode: which registry params, in
 // order, and whether each stays live (k-rate) or is fixed once at the drone's start
@@ -139,7 +143,7 @@ ${reads.join("\n")}
   revsendk1 aL, aR, chnget:k(Ss1), lineto:k(chnget:k(Sa1), ${GLIDE})
   revsendk1 aL, aR, chnget:k(Ss2), lineto:k(chnget:k(Sa2), ${GLIDE})
   revsendk1 aL, aR, chnget:k(Ss3), lineto:k(chnget:k(Sa3), ${GLIDE})`;
-  return csoundSource(`${name} (drone)`, droneInstance(s.instr), body);
+  return csoundSource(`${name} (drone)`, droneInstr(s.instr), body);
 }
 const DRONE_INSTR_SOURCE = Object.entries(DRONABLE_SYNTHS)
   .map(([name, s]) => droneInstrSource(name, s))
@@ -824,16 +828,16 @@ export function createEngine(Csound, { onMessage }) {
     async defineDrone(slot, instr, channels) {
       await this.updateDrone(slot, channels);
       if (dronesRunning.get(slot) === instr) return;
-      if (dronesRunning.has(slot)) await csound.inputMessage(`i -${droneInstance(dronesRunning.get(slot))} 0 0`);
+      if (dronesRunning.has(slot)) await csound.inputMessage(`i -${droneInstance(dronesRunning.get(slot), slot)} 0 0`);
       dronesRunning.set(slot, instr);
-      await csound.inputMessage(`i ${droneInstance(instr)} 0 -1 ${slot}`);
+      await csound.inputMessage(`i ${droneInstance(instr, slot)} 0 -1 ${slot}`);
     },
 
     async stopDrone(slot) {
       const instr = dronesRunning.get(slot);
       if (instr === undefined) return;
       dronesRunning.delete(slot);
-      await csound.inputMessage(`i -${droneInstance(instr)} 0 0`);
+      await csound.inputMessage(`i -${droneInstance(instr, slot)} 0 0`);
     },
 
     // Writes a bus's amp/pan/send channels without touching whether its return instrument
