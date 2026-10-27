@@ -154,7 +154,7 @@ endop
       min: 0,
       max: 1,
       kind: "position",
-      doc: "Where in the src file the grains come from, from 0 (the start) to 1 (the end). Hold it still to freeze a moment of the sound; on a drone, position=lineto(0, 1, 60) stretches the whole file over a minute without changing its pitch. spray scatters grains up to half a second around it.",
+      doc: "Where in the src file the grains come from, from 0 (the start) to 1 (the end). Hold it still to freeze a moment of the sound; on a drone, position=lineto(0, 1, 128) stretches the whole file over 128 beats (a minute at 128 bpm) without changing its pitch. spray scatters grains up to half a second around it.",
     },
   },
   body: `

@@ -435,25 +435,24 @@ function oneValue(args, name) {
 
 // lineto() needs two things no other Dyn does: a starting value that may only be known
 // once it's bound to a specific drone, bus or delay parameter (the "start from wherever it
-// currently is" form), and a ramp length given in seconds, converted to beats using
-// the tempo at the moment it starts (Dyn.at only ever receives a beat, never a tempo).
-// Both are filled in after construction, in two steps done only for drones, buses and
-// delays (see buildDroneSpec/defineDrone and the bus and delay ones): first bind() resolves
-// `from` (from a remembered value, or the target itself if there is none yet) and
-// marks it as legitimately used there; then arm() fixes the actual start beat and ramp
-// length once the real clock is available. A lineto() that is never bound this way
-// (used on a player, a reverb, or combined with arithmetic, which wraps it in a plain,
-// untagged Dyn) throws as soon as it is evaluated, rather than silently returning a
-// frozen or wrong value.
-function makeLinetoDyn(from, to, seconds) {
+// currently is" form), and the beat the ramp starts on. Both are filled in after
+// construction, in two steps done only for drones, buses and delays (see
+// buildDroneSpec/defineDrone and the bus and delay ones): first bind() resolves `from`
+// (from a remembered value, or the target itself if there is none yet) and marks it as
+// legitimately used there; then arm() fixes the start beat once the real clock is
+// available. The length is in beats, so a ramp follows tempo changes like everything
+// else. A lineto() that is never bound this way (used on a player, a reverb, or
+// combined with arithmetic, which wraps it in a plain, untagged Dyn) throws as soon as
+// it is evaluated, rather than silently returning a frozen or wrong value.
+function makeLinetoDyn(from, to, beats) {
   const dyn = new Dyn((beat) => {
     const L = dyn.lineto;
     if (!L.bound) throw new Error("lineto() only works on the parameters of a drone (a definition with no dur=), a bus or a delay, used directly -- not on a player, a reverb, or combined with arithmetic.");
     if (!L.armed) return L.to;
-    const t = L.rampBeats <= 0 ? 1 : clamp((beat - L.startBeat) / L.rampBeats, 0, 1);
+    const t = clamp((beat - L.startBeat) / L.beats, 0, 1);
     return L.from + (L.to - L.from) * t;
   });
-  dyn.lineto = { from, to, seconds, bound: false, armed: false };
+  dyn.lineto = { from, to, beats, bound: false, armed: false };
   return dyn;
 }
 
@@ -483,19 +482,34 @@ function bindLinetoAll(paramMemory, name, fields) {
   }
 }
 
-// Fixes the real start beat and ramp length (seconds converted using the tempo right
-// now) of every lineto() found among `values`. Done separately from the bind step
-// above, and only once the real clock is available, so a dry-run validation call (which
-// has no real beat/tempo yet) can't corrupt a ramp's actual timing. Shared by
-// defineDrone, defineBus and defineDelay.
+// Fixes the real start beat of every lineto() found among `values`. Done separately from
+// the bind step above, and only once the real clock is available, so a dry-run
+// validation call (which has no real beat yet) can't corrupt a ramp's actual timing.
+// Shared by defineDrone, defineBus and defineDelay.
 function armLinetoAll(now, values) {
   for (const value of values) {
     forEachLineto(value, (dyn) => {
       dyn.lineto.startBeat = now.beat;
-      dyn.lineto.rampBeats = (dyn.lineto.seconds * now.bpm) / 60;
       dyn.lineto.armed = true;
     });
   }
+}
+
+// A random draw for random()/randint(): without `every`, a new one each time it is
+// evaluated (every step on a player, every tick on a drone); with it, a new one only
+// when the beat crosses into the next window of `every` beats, counted on the beat grid,
+// so the value holds for whole beats or bars in step with the music.
+function held(draw, every, name) {
+  if (every === undefined) return draw;
+  const span = num(every, `${name} every`);
+  if (span <= 0) throw new Error(`${name} every must be greater than 0 (in beats)`);
+  let window = null;
+  let value;
+  return (beat) => {
+    const w = Math.floor(beat / span + EPS);
+    if (w !== window) [window, value] = [w, draw()];
+    return value;
+  };
 }
 
 // One entry per name in FUNCTIONS (registry.js), which holds their documentation.
@@ -520,39 +534,37 @@ const FUNCTION_IMPLS = {
   floor: (args) => mapNumbers(Math.floor, oneValue(args, "floor"), "floor"),
 
   random(args) {
-    if (args.length === 1 && Array.isArray(args[0])) {
-      const list = args[0];
+    if (Array.isArray(args[0])) {
+      const [list, every] = args;
+      if (args.length > 2) throw new Error("random(list) or random(list, every) takes a list and optionally a number of beats");
       if (!list.length) throw new Error("random() needs a list with at least one item");
-      return new Dyn((beat) => resolve(list[Math.floor(Math.random() * list.length)], beat));
+      // The chosen item is held; an item that changes over time (cosr) keeps moving.
+      const index = held(() => Math.floor(Math.random() * list.length), every, "random");
+      return new Dyn((beat) => resolve(list[index(beat)], beat));
     }
-    if (args.length !== 2) throw new Error("random(low, high) takes two numbers, or one list");
-    const [a, b] = args.map((x, i) => num(x, ["random low", "random high"][i]));
+    if (args.length !== 2 && args.length !== 3) throw new Error("random(low, high) or random(low, high, every) takes two or three numbers, or a list");
+    const [a, b] = args.slice(0, 2).map((x, i) => num(x, ["random low", "random high"][i]));
     const low = Math.min(a, b);
     const high = Math.max(a, b);
-    return new Dyn(() => low + Math.random() * (high - low));
+    return new Dyn(held(() => low + Math.random() * (high - low), args[2], "random"));
   },
 
   randint(args) {
-    if (args.length !== 2) throw new Error("randint(low, high) takes two numbers");
-    const [a, b] = args.map((x, i) => num(x, ["randint low", "randint high"][i]));
+    if (args.length !== 2 && args.length !== 3) throw new Error("randint(low, high) or randint(low, high, every) takes two or three numbers");
+    const [a, b] = args.slice(0, 2).map((x, i) => num(x, ["randint low", "randint high"][i]));
     const low = Math.ceil(Math.min(a, b));
     const high = Math.floor(Math.max(a, b));
     if (high < low) throw new Error("randint() needs a range that contains a whole number");
-    return new Dyn(() => low + Math.floor(Math.random() * (high - low + 1)));
+    return new Dyn(held(() => low + Math.floor(Math.random() * (high - low + 1)), args[2], "randint"));
   },
 
   lineto(args) {
-    if (args.length === 2) {
-      const [to, seconds] = args.map((x, i) => num(x, ["lineto to", "lineto seconds"][i]));
-      if (seconds <= 0) throw new Error("lineto seconds must be greater than 0");
-      return makeLinetoDyn(undefined, to, seconds);
-    }
-    if (args.length === 3) {
-      const [from, to, seconds] = args.map((x, i) => num(x, ["lineto from", "lineto to", "lineto seconds"][i]));
-      if (seconds <= 0) throw new Error("lineto seconds must be greater than 0");
-      return makeLinetoDyn(from, to, seconds);
-    }
-    throw new Error("lineto(to, seconds) or lineto(from, to, seconds)");
+    if (args.length !== 2 && args.length !== 3) throw new Error("lineto(to, beats) or lineto(from, to, beats)");
+    const names = args.length === 2 ? ["lineto to", "lineto beats"] : ["lineto from", "lineto to", "lineto beats"];
+    const values = args.map((x, i) => num(x, names[i]));
+    const beats = values.at(-1);
+    if (beats <= 0) throw new Error("lineto beats must be greater than 0");
+    return args.length === 2 ? makeLinetoDyn(undefined, values[0], beats) : makeLinetoDyn(values[0], values[1], beats);
   },
 };
 
@@ -687,7 +699,7 @@ export function createFox(engine, { onTempo, onBar, onError, onLog, lint = false
   const buses = new Map();
   const delays = new Map();
   // Last raw value resolved for each drone's, bus's or delay's own parameter, keyed by
-  // "name:key", so a lineto(to, seconds) re-evaluated later knows what "wherever it
+  // "name:key", so a lineto(to, beats) re-evaluated later knows what "wherever it
   // currently is" means. Updated every tick by the resolve*Channels functions; cleared
   // when the drone, bus or delay is killed.
   const paramMemory = new Map();
@@ -879,7 +891,7 @@ export function createFox(engine, { onTempo, onBar, onError, onLog, lint = false
   }
 
   // Works out a drone's current channel values at the given beat/bpm. Also remembers
-  // every raw value in paramMemory, so a later lineto(to, seconds) on this drone knows
+  // every raw value in paramMemory, so a later lineto(to, beats) on this drone knows
   // where to start from -- but only once it is actually running (spec.slot is set once
   // defineDrone assigns one; buildDroneSpec's own dry-run validation call happens
   // before that, and must not overwrite a real remembered value with a throwaway one).

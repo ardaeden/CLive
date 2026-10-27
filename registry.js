@@ -259,18 +259,18 @@ export const FUNCTIONS = {
     rate: "Whatever the value inside it produces -- a plain number never changes, cosr()/random() inside it updates at their own rate.",
   },
   random: {
-    syntax: "random(low, high)",
-    doc: "A new random number from low up to high every time a step plays. random([0, 2, 4]) picks one item of the list instead. The items can be numbers, chords or r, so random([0, r]) is a coin flip for a rest, and drum lists work too: random([\"o\", \"-\"]). Random durations move notes off the bar grid, so keep dur fixed or use a list of durations that add up.",
-    rate: "On a player: once per step. On a drone: a new draw continuously, about every 20ms -- can sound flickery there; wrap it in round()/floor() with a slow cosr() instead if you want it to move more calmly.",
+    syntax: "random(low, high) or random(low, high, every)",
+    doc: "A random number from low up to high. random([0, 2, 4]) picks one item of the list instead, and random([0, 2, 4], 4) does that every 4 beats. The items can be numbers, chords or r, so random([0, r]) is a coin flip for a rest, and drum lists work too: random([\"o\", \"-\"]). With every (in beats) the value holds and a new one is drawn only every that many beats, counted on the beat grid: random(-1, 1, 4) changes once a bar in 4/4, always on the bar line. Random durations move notes off the bar grid, so keep dur fixed or use a list of durations that add up.",
+    rate: "Without every: on a player, a new value every step; on a drone, continuously, about every 20ms, which sounds like a fast flicker there. With every: a new value every that many beats, on the beat grid, on players and drones alike (on a player, the steps inside one window share a value).",
   },
   randint: {
-    syntax: "randint(low, high)",
-    doc: "Like random(low, high) but gives whole numbers, both ends included: randint(0, 7). Use it for scale degrees, since a fractional degree gives an in-between pitch.",
-    rate: "Same as random(): once per step on a player, continuously (about every 20ms) on a drone.",
+    syntax: "randint(low, high) or randint(low, high, every)",
+    doc: "Like random(low, high) but gives whole numbers, both ends included: randint(0, 7). Use it for scale degrees, since a fractional degree gives an in-between pitch. A drone with degree=randint(0, 7, 1) plays a new random note every beat.",
+    rate: "Same as random(): without every, every step on a player and continuously (about every 20ms) on a drone; with every, every that many beats.",
   },
   lineto: {
-    syntax: "lineto(from, to, seconds) or lineto(to, seconds)",
-    doc: "A linear ramp in real seconds (converted to beats using the tempo when it starts, so it stays accurate as long as the tempo doesn't change mid-ramp); once it reaches the target it just holds there. lineto(from, to, seconds) always starts at from. lineto(to, seconds) starts from wherever the same parameter is playing right now, so re-evaluating amp=lineto(0, 3) fades a running drone, bus or delay out smoothly from whatever it is currently at, and amp=lineto(0, 1, 4) fades one in from silence. Only works on a drone's own parameters (degree, oct, amp, pan, send amounts, a synth's own live parameters) a bus's (amp, pan, send amounts) or a delay's (all of them, send amounts included), used directly -- not on a player, a reverb, tempo/bar/scale/root, and it cannot be combined with arithmetic (+, *, ...).",
+    syntax: "lineto(from, to, beats) or lineto(to, beats)",
+    doc: "A linear ramp over a number of beats, like every other length in the language, so it speeds up and slows down with the tempo; once it reaches the target it just holds there. lineto(from, to, beats) always starts at from. lineto(to, beats) starts from wherever the same parameter is playing right now, so re-evaluating amp=lineto(0, 8) fades a running drone, bus or delay out smoothly over two bars (in 4/4) from whatever it is currently at, and amp=lineto(0, 1, 16) fades one in from silence over four. Only works on a drone's own parameters (degree, oct, amp, pan, send amounts, a synth's own live parameters) a bus's (amp, pan, send amounts) or a delay's (all of them, send amounts included), used directly -- not on a player, a reverb, tempo/bar/scale/root, and it cannot be combined with arithmetic (+, *, ...).",
     rate: "Continuously, about every 20ms, on drones, buses and delays only -- there is no per-step form, since it only makes sense on something re-read continuously like that.",
   },
 };
@@ -341,11 +341,11 @@ export const GUIDE = {
     title: "Drones",
     paragraphs: [
       "A drone is one continuous voice instead of a repeating pattern: leave out dur and give a single degree (or nothing, for degree 0) instead of a list. It starts as soon as you evaluate it, ignores the bar grid, and keeps running until you kill it. (A `scale` or `root` command is the exception: a drone that follows the default picks the change up on the same bar line as the players.) Only synths marked \"drone\" on the Synths page can be used this way; the rest are built around decaying to silence, which does not make sense held forever.",
-      "amp, pan, send and most of a synth's own parameters keep updating live while a drone runs, both when you re-evaluate the line with new plain numbers and continuously if you use `cosr()`/`random()` there: those are re-read every few milliseconds instead of once, so `g1: gendy(0, spread=cosr(0.4, 0.3, 8))` actually breathes in and out while it plays, not just once per note. Parameters that shape an envelope over time (fmpad's attack and release, for example) are the exception: Csound needs those fixed when the drone starts, so re-evaluating the line alone will not change them, only `kill` and redefining it will.",
-      "`lineto()` fades a drone in or out: `g1: gendy(0, amp=lineto(0, 1, 4))` fades in from silence over 4 seconds, and later re-evaluating `g1: gendy(0, amp=lineto(0, 3))` fades it back out over 3 seconds from whatever it is playing at right now, not from the start of the previous ramp. A bus's amp, pan and send amounts, and every parameter of a delay, can be faded the same way -- see the Buses and Delay pages. It is not accepted anywhere else (a player, a reverb, tempo/bar/scale/root, or combined with arithmetic).",
+      "amp, pan, send and most of a synth's own parameters keep updating live while a drone runs, both when you re-evaluate the line with new plain numbers and continuously if you use `cosr()`/`random()` there: those are re-read every few milliseconds instead of once, so `g1: gendy(0, spread=cosr(0.4, 0.3, 8))` actually breathes in and out while it plays, not just once per note. `random()` and `randint()` draw a new value on every one of those refreshes, which sounds like a fast flicker; give them a third argument, a number of beats, to hold each value that long instead: `g1: fmpad(randint(0, 7, 1))` plays a new random note every beat. Parameters that shape an envelope over time (fmpad's attack and release, for example) are the exception: Csound needs those fixed when the drone starts, so re-evaluating the line alone will not change them, only `kill` and redefining it will.",
+      "`lineto()` fades a drone in or out: `g1: gendy(0, amp=lineto(0, 1, 16))` fades in from silence over 16 beats (four bars in 4/4), and later re-evaluating `g1: gendy(0, amp=lineto(0, 8))` fades it back out over 8 beats from whatever it is playing at right now, not from the start of the previous ramp. A bus's amp, pan and send amounts, and every parameter of a delay, can be faded the same way -- see the Buses and Delay pages. It is not accepted anywhere else (a player, a reverb, tempo/bar/scale/root, or combined with arithmetic).",
       "`kill` stops a drone immediately, not at the next bar line, since it was never on the grid to begin with -- for a smooth stop instead of a hard cut, fade out with `lineto()` first and `kill` once it reaches 0.",
     ],
-    example: 'rev1: reverb(decay=0.9)\ng1: gendy(0, oct=3, amp=lineto(0, 0.35, 4), spread=cosr(0.3, 0.25, 16), points=cosr(20, 15, 8))\nf1: fmpad(-2, oct=4, amp=0.3, send=rev1(0.4))\nkill g1',
+    example: 'rev1: reverb(decay=0.9)\ng1: gendy(0, oct=3, amp=lineto(0, 0.35, 8), spread=cosr(0.3, 0.25, 16), points=cosr(20, 15, 8))\nf1: fmpad(-2, oct=4, amp=0.3, send=rev1(0.4))\nkill g1',
   },
   synths: {
     title: "Synths",
@@ -354,7 +354,7 @@ export const GUIDE = {
       "Some built-in synths have extra parameters of their own, listed below. They are written like any other parameter (`pluck([0, 2], bright=0.3)`), can use `cosr()` and `random()`, and unknown ones are reported as errors.",
       "`cloud` can also take its grains from your own sound files. Put WAV, MP3, OGG or FLAC files in the `samples` folder next to the app and name one with `src=\"choir.wav\"`. The file loads the first time it is used (the console says when it is ready, and the cloud stays silent until then) and stays loaded until the page is reloaded; re-evaluating a line that failed to load tries again. Hold `position` still to freeze one moment of the file, or move it with `lineto()` on a drone to stretch the file out without changing its pitch.",
     ],
-    example: 'rev1: reverb(decay=0.9)\nc1: cloud([(0, 2, 4), (-1, 1, 4)], dur=4, oct=4, density=30, size=120, wave=cosr(1, 1, 16), send=rev1(0.4))\ng1: cloud(0, oct=4, src="choir.wav", position=lineto(0, 1, 60), size=150, density=40, spray=0.4)',
+    example: 'rev1: reverb(decay=0.9)\nc1: cloud([(0, 2, 4), (-1, 1, 4)], dur=4, oct=4, density=30, size=120, wave=cosr(1, 1, 16), send=rev1(0.4))\ng1: cloud(0, oct=4, src="choir.wav", position=lineto(0, 1, 128), size=150, density=40, spray=0.4)',
   },
   drums: {
     title: "Drums",
@@ -368,7 +368,7 @@ export const GUIDE = {
     title: "Patterns",
     paragraphs: [
       "Pattern arguments are small expressions. Numbers are scale degrees, not semitones.",
-      "`cosr()` makes a value that changes with the beat, so a parameter can breathe over several bars while staying in time with everything else. `random()` and `randint()` draw a new value every time a step plays.",
+      "`cosr()` makes a value that changes with the beat, so a parameter can breathe over several bars while staying in time with everything else. `random()` and `randint()` draw a new value every time a step plays, or, with a number of beats as their last argument, once every that many beats: `random([0, 2, 4], 4)` picks a new note each bar in 4/4.",
     ],
     example: 'p2: pluck(range(8) * 2, dur=1/4, oct=6, amp=cosr(0.4, 0.3, 8))\np3: pluck([0, randint(1, 7), random([2, 4, r])], dur=1/2)\nc1: pad([(0, 2, 4), (-2, 1, 3)], dur=4, sus=4)',
   },
@@ -389,11 +389,11 @@ export const GUIDE = {
     title: "Delay",
     paragraphs: [
       "A delay is a send effect like a reverb: define it with `echo1: delay(...)` and send to it with `send=echo1(amount)` from players, drones and buses. It outputs only the repeats, never the dry sound. Reverbs and delays share the send slots (see sendSlots on the Limits page), and a player can send to up to three of them in any mix: `send=[echo1(0.3), rev1(0.2)]`.",
-      "The time is in beats and follows the tempo, and every parameter updates live while it runs, like a bus's: re-evaluate the line, or use `cosr()` and `lineto()`. `feedback=lineto(0.95, 4)` swells the repeats into a long trail over four seconds; bring it back down the same way. A redefinition resets whatever it leaves out, so keep the other parameters on the line.",
+      "The time is in beats and follows the tempo, and every parameter updates live while it runs, like a bus's: re-evaluate the line, or use `cosr()` and `lineto()`. `feedback=lineto(0.95, 8)` swells the repeats into a long trail over 8 beats; bring it back down the same way. A redefinition resets whatever it leaves out, so keep the other parameters on the line.",
       "A delay can send its repeats on to reverbs with its own `send=`, after its level: `echo1: delay(time=3/4, send=rev1(0.4))` puts every echo in the hall. It cannot send to a delay, itself included.",
       "`kill echo1` fades its repeats out in a tenth of a second. As with a reverb, whatever still sent to it falls silent until re-evaluated.",
     ],
-    example: 'rev1: reverb(decay=0.9)\necho1: delay(time=3/4, feedback=0.55, pingpong=1, highcut=3500, wobble=0.3, send=rev1(0.3))\np1: pluck([0, 2, 4, 7], dur=1/2, send=echo1(0.35))\n; a slow dub swell, then back\necho1: delay(time=3/4, feedback=lineto(0.97, 4), pingpong=1, highcut=3500, wobble=0.3, drive=0.6, send=rev1(0.3))\necho1: delay(time=3/4, feedback=lineto(0.5, 2), pingpong=1, highcut=3500, wobble=0.3, send=rev1(0.3))',
+    example: 'rev1: reverb(decay=0.9)\necho1: delay(time=3/4, feedback=0.55, pingpong=1, highcut=3500, wobble=0.3, send=rev1(0.3))\np1: pluck([0, 2, 4, 7], dur=1/2, send=echo1(0.35))\n; a slow dub swell, then back\necho1: delay(time=3/4, feedback=lineto(0.97, 8), pingpong=1, highcut=3500, wobble=0.3, drive=0.6, send=rev1(0.3))\necho1: delay(time=3/4, feedback=lineto(0.5, 4), pingpong=1, highcut=3500, wobble=0.3, send=rev1(0.3))',
   },
   buses: {
     title: "Buses",
@@ -404,7 +404,7 @@ export const GUIDE = {
       "`send=` on a bussed player still works exactly as before and is independent of the bus: the note computes its own reverb send from its own dry signal before that signal is handed to the bus. The two add up, so a player with its own `send=rev1(0.3)` on a bus with `send=rev1(0.4)` reaches rev1 twice; usually you want one or the other.",
       "`kill mix1` stops the bus immediately. Players still routed to it do not error, they just go silent (the same as sending to a killed reverb) -- re-evaluate them, without @mix1 or with a different bus, to hear them again.",
     ],
-    example: 'rev1: reverb(decay=0.9)\nmix1: bus(amp=0.8, pan=0, send=rev1(0.3))\np1: pluck@mix1([0, 2, 4, 7], dur=1/2)\np2: pluck@mix1([2, 4, 6, 9], dur=1/2, oct=6, amp=0.6)\n; wash the whole group in reverb, then dry it again (a redefinition resets\n; whatever it leaves out, so keep amp and send on every line)\nmix1: bus(amp=0.8, send=rev1(lineto(0.8, 4)))\nmix1: bus(amp=0.8, send=rev1(lineto(0.3, 2)))\n; fade the whole group out together, then back in\nmix1: bus(amp=lineto(0, 3), send=rev1(0.3))\nmix1: bus(amp=lineto(0, 0.8, 2), send=rev1(0.3))',
+    example: 'rev1: reverb(decay=0.9)\nmix1: bus(amp=0.8, pan=0, send=rev1(0.3))\np1: pluck@mix1([0, 2, 4, 7], dur=1/2)\np2: pluck@mix1([2, 4, 6, 9], dur=1/2, oct=6, amp=0.6)\n; wash the whole group in reverb, then dry it again (a redefinition resets\n; whatever it leaves out, so keep amp and send on every line)\nmix1: bus(amp=0.8, send=rev1(lineto(0.8, 8)))\nmix1: bus(amp=0.8, send=rev1(lineto(0.3, 4)))\n; fade the whole group out together, then back in\nmix1: bus(amp=lineto(0, 8), send=rev1(0.3))\nmix1: bus(amp=lineto(0, 0.8, 4), send=rev1(0.3))',
   },
   csound: {
     title: "Your own Csound instruments",
