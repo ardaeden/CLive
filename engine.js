@@ -118,8 +118,36 @@ function droneInstrSource(name, s) {
   Sfreq sprintf "drone%d_freq", islot
   Span sprintf "drone%d_pan", islot
   kamp lineto chnget:k(Samp), ${GLIDE}
-  kfreq lineto chnget:k(Sfreq), ${GLIDE}
   kpan lineto chnget:k(Span), ${GLIDE}
+  ; Pitch glides like the rest while it keeps moving, so cosr() and lineto() sweeps stay
+  ; smooth. A change after the pitch has held still for a few updates is a new note
+  ; (random() with every, a re-evaluated degree): it jumps at once instead of sliding
+  ; audibly. Telling them apart by timing rather than by size keeps a fast sweep, whose
+  ; steps grow when an update comes late, from being mistaken for jumps. A jump in pitch
+  ; alone does not click, as the oscillators keep their phase.
+  kftarget chnget Sfreq
+  kfprev init -1
+  kfreq init 0
+  kfstep init 0
+  kfsince init 1000
+  if kftarget != kfprev then
+    kfprev = kftarget
+    if kfreq <= 0 || kfsince > ${3 * GLIDE} then
+      kfreq = kftarget
+      kfstep = 0
+    else
+      kfstep = (kftarget - kfreq) / (${GLIDE} * kr)
+    endif
+    kfsince = 0
+  endif
+  kfsince += ksmps / sr
+  if kfstep != 0 then
+    kfreq += kfstep
+    if (kfstep > 0 && kfreq >= kftarget) || (kfstep < 0 && kfreq <= kftarget) then
+      kfreq = kftarget
+      kfstep = 0
+    endif
+  endif
 ${reads.join("\n")}
   ; The voice runs at unit level in the centre, and level and pan are applied here per
   ; sample instead: a k-rate glide still moves in 32-sample steps, which buzz on a
